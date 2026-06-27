@@ -1,0 +1,291 @@
+COREMESH AI: SPECIFICATION DOCUMENT & INCREMENTAL IMPLEMENTATION BLUEPRINT
+This blueprint defines the architecture, data contracts, and implementation steps for CoreMesh AI: an enterprise-grade AI Agent Platform for Corporate Knowledge and Automations [source: 2].
+
+This document is formatted with explicit structural declarations, typed schemas, and isolated lifecycle phases specifically optimized for autonomous coding agents (e.g., Cursor, Claude Engineer).
+
+SYSTEM ARCHITECTURE OVERVIEW
+                        [ User / Client Application ]
+                                      │
+                                      ▼
+┌──────────────────────────────────────────────────────────────────────────┐
+│ 1. GO-BASED GATEWAY PROXY LAYER                                          │
+│                                                                          │
+│  ┌─────────────────────────┐            ┌─────────────────────────────┐  │
+│  │     PROMPT REGISTRY     │            │      TRAFFIC SPLITTER       │  │
+│  │ (Version Control & Diffs)            │ (A/B Test / Canary Rollout) │  │
+│  └───────────┬─────────────┘            └──────────────┬──────────────┘  │
+│              │                                         │                 │
+│              ▼                                         ▼                 │
+│  ┌─────────────────────────┐            ┌─────────────────────────────┐  │
+│  │      SEMANTIC CACHE     │            │       COST AUTOPILOT        │  │
+│  │ (Redis Similarity Hit)  │            │  (Complexity Classifier)    │  │
+│  └───────────┬─────────────┘            └──────────────┬──────────────┘  │
+│              │                                         │                 │
+│              └────────────────────┬────────────────────┘                 │
+│                                   │                                      │
+│                                   ▼                                      │
+│                  ┌──────────────────────────────────┐                    │
+│                  │   CORE PROXY RESILIENCY ENGINE   │                    │
+│                  │  (Token Bucket Limits / Circuit) │                    │
+│                  └────────────────┬─────────────────┘                    │
+└───────────────────────────────────┼──────────────────────────────────────┘
+                                    │
+                                    ▼
+┌──────────────────────────────────────────────────────────────────────────┐
+│ 2. PYTHON-BASED INTELLIGENT RUNTIME LAYER                                │
+│                                                                          │
+│  ┌─────────────────────────┐            ┌─────────────────────────────┐  │
+│  │    DOCUMENT INGESTION   │            │      HYBRID SEARCH RAG      │  │
+│  │    (Multi-Engine OCR)   │            │   (RRF / Cross-Encoder)     │  │
+│  └───────────┬─────────────┘            └──────────────┬──────────────┘  │
+│              │                                         │                 │
+│              ▼                                         ▼                 │
+│  ┌─────────────────────────┐            ┌─────────────────────────────┐  │
+│  │   LANGGRAPH SUPERVISOR  │───────────►│    TEXT-TO-SQL GUARDRAILS   │  │
+│  │ (Short/Long-Term Memory)│            │   (AST Checking / Sandbox)  │  │
+│  └───────────┬─────────────┘            └─────────────────────────────┘  │
+│              │                                                           │
+│              ▼                                                           │
+│  ┌─────────────────────────┐                                             │
+│  │   OUTPUT ARBITRATION    │                                             │
+│  │(Parallel Critic Cluster)│                                             │
+│  └─────────────────────────┘                                             │
+└───────────────────────────────────┼──────────────────────────────────────┘
+                                    │
+                                    ▼
+┌──────────────────────────────────────────────────────────────────────────┐
+│ 3. OBSERVABILITY, DEVOPS, & CONTINUAL TESTING ASSETS                     │
+│                                                                          │
+│  ┌─────────────────────────┐            ┌─────────────────────────────┐  │
+│  │   OPENTELEMETRY TRACES  │            │     PRODUCTION LOG MINER    │  │
+│  │(Backward Forensics Span)│            │ (HDBSCAN Outlier Curation)  │  │
+│  └─────────────────────────┘            └──────────────┬──────────────┘  │
+│                                                        │                 │
+│                                                        ▼                 │
+│  ┌─────────────────────────┐            ┌─────────────────────────────┐  │
+│  │   GITHUB ACTIONS CI/CD  │◄───────────│   AUTOMATED REGRESSION TEST │  │
+│  │(Self-Healing Doc / AST) │            │   (Golden Dataset Execution)│  │
+│  └─────────────────────────┘            └─────────────────────────────┘  │
+└──────────────────────────────────────────────────────────────────────────┘
+Infrastructure Core Stack
+Edge Proxy Gateway: Go 1.22+ (utilizing net/http reverse proxy engines and concurrent goroutine pools) [source: 2].
+
+Execution Runtime Engine: Python 3.11+ (FastAPI asynchronous microservices, LangGraph state engines) [source: 2].
+
+System Event Store & Caching: Redis 7.2+ (handling token buckets, semantic embeddings caching via HNSW vector structures) [source: 2].
+
+System Transaction Metadata: PostgreSQL 16+ (storing prompt states, experiment rules, feature splits, runtime access logs) [source: 2].
+
+Enterprise Document Index: Qdrant Vector DB (handling spatial sparse/dense indices) + Meilisearch (handling token matches) [source: 2].
+
+REPOSITORY TREE LAYOUT
+.
+├── .github/
+│   └── workflows/
+│       ├── model-regression-ci.yml       # [Project 1] Automated Evaluation Gates
+│       └── self-healing-docs.yml         # [Project 4] AST-Driven Documentation Sync
+├── gateway-proxy/                        # [Project 11] Go-Based Traffic Controller
+│   ├── cmd/
+│   │   └── main.go
+│   ├── internal/
+│   │   ├── autopilot/                    # [Project 2] Complexity Routers
+│   │   ├── cache/                        # [Project 7] Redis Semantic Memory Proxies
+│   │   ├── flags/                        # [Project 12] Quality Feature Flags
+│   │   ├── gateway/                      # [Project 11] Token Buckets & Circuit Breakers
+│   │   └── registry/                     # [Project 9] Hot-Reload Prompt Control
+│   ├── go.mod
+│   └── Dockerfile
+├── services-runtime/                     # Python Asynchronous Microservice Layer
+│   ├── src/
+│   │   ├── ingestion/                    # [Project 14] Multi-Modal OCR Processors
+│   │   ├── rag/                          # [Project 6] Dense/Sparse Retrieval Pipelines
+│   │   ├── sql_engine/                   # [Project 8] Guardrailed Text-to-SQL runtimes
+│   │   ├── agents/                       # [Project 15] LangGraph Tool Systems
+│   │   ├── arbitration/                  # [Project 5] Parallel Model Critic Pools
+│   │   └── tracing/                      # [Project 3] Forensics Trace Listeners
+│   ├── requirements.txt
+│   └── Dockerfile
+├── analytics-workers/                    # Background Automation Infrastructure
+│   └── src/
+│       ├── log_miner/                    # [Project 13] HDBSCAN Curation Loop
+│       └── fine_tuner/                   # [Project 10] Open PEFT/QLoRA pipelines
+├── docker-compose.yml
+└── README.md
+INTERFACE DEFINITIONS & SCHEMAS
+Data Schema (PostgreSQL)
+SQL
+-- [Project 9] Prompt Version Registry
+CREATE TABLE prompt_registry (
+    prompt_id VARCHAR(64) NOT NULL,
+    version_id INT NOT NULL,
+    system_prompt TEXT NOT NULL,
+    few_shot_examples JSONB DEFAULT '[]'::jsonb,
+    model_parameters JSONB NOT NULL, -- {"temperature": 0.2, "max_tokens": 1000}
+    commit_message TEXT,
+    is_active BOOLEAN DEFAULT FALSE,
+    created_at TIMESTAMP WITHOUT TIME ZONE DEFAULT TIMEZONE('utc', NOW()),
+    PRIMARY KEY (prompt_id, version_id)
+);
+
+-- [Project 9, 12] Experiment Splits and Feature Flag Configurations
+CREATE TABLE feature_experiments (
+    flag_name VARCHAR(64) PRIMARY KEY,
+    rollout_percentage INT NOT NULL DEFAULT 0, -- 0 to 100
+    quality_threshold_p10 NUMERIC(3,2) NOT NULL, -- Rollback trigger if score dips below
+    baseline_prompt_version INT NOT NULL,
+    experimental_prompt_version INT NOT NULL,
+    status VARCHAR(32) NOT NULL DEFAULT 'draft', -- 'running', 'rolled_back', 'completed'
+    updated_at TIMESTAMP WITHOUT TIME ZONE DEFAULT TIMEZONE('utc', NOW())
+);
+
+-- [Project 1, 13] Master Evaluation Dataset Store
+CREATE TABLE golden_datasets (
+    case_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    feature_scope VARCHAR(64) NOT NULL,
+    user_input TEXT NOT NULL,
+    expected_output JSONB NOT NULL,
+    difficulty_rating VARCHAR(16) NOT NULL, -- 'simple', 'moderate', 'hard', 'adversarial'
+    origin_source VARCHAR(32) NOT NULL, -- 'human_curated', 'production_miner'
+    created_at TIMESTAMP WITHOUT TIME ZONE DEFAULT TIMEZONE('utc', NOW())
+);
+Data Contracts (Pydantic Typed Models)
+Python
+from pydantic import BaseModel, Field
+from typing import List, Dict, Optional, Any
+
+# [Project 14] Structured Document Target Extraction Contract
+class ExtractionTargetSchema(BaseModel):
+    vendor_name: str = Field(description="Normalized corporate legal entity name.")
+    invoice_id: str = Field(description="Unique identity token extracted from document metadata header.")
+    line_items: List[Dict[str, Any]] = Field(description="Array listing units, description parameters, totals.")
+    calculated_tax: float = Field(description="Extracted aggregate processing fees or transactional taxes.")
+    invoice_total: float = Field(description="Total absolute cost validation metric.")
+
+# [Project 15] Core Platform Unified Query Interface
+class ExecutionRequestPayload(BaseModel):
+    user_id: str
+    feature_scope: str
+    payload_query: str
+    session_context: Optional[Dict[str, Any]] = None
+
+# [Project 5] Arbitration Evaluation Assessment Contract
+class CriticAssessmentSchema(BaseModel):
+    evaluation_dimension: str = Field(description="Dimension assessed: 'factual', 'logic', 'completeness'")
+    assigned_score: int = Field(description="Integer rating bounded between 1 (poor) to 5 (excellent)")
+    flagged_anomalies: List[str] = Field(description="List of raw snippets indicating hallucinations or structural errors.")
+    confidence_coefficient: float = Field(description="Model confidence measurement scaled between 0.0 and 1.0")
+STEP-BY-STEP IMPLEMENTATION PLAN
+Phase 1: Python Processing Engine & Core Extraction
+Focus: Establish raw processing capabilities for documents, structured SQL datasets, and core semantic retrieval models.
+
+Step 1.1: Multi-Modal Document Extraction Ingestion Pipeline [Project 14]
+Implementation: Build services-runtime/src/ingestion/processor.py. Integrate pdf2image and dual-engine parsing arrays via pytesseract and EasyOCR. Write logic to compare token strings; if accuracy variations exceed 8%, fall back to calling a Vision LLM (gpt-4o / claude-3-5-sonnet) with explicit formatting rules. Apply image filtering models (deskewing, black/white contrast adjustments) prior to extracting text.
+
+Agent Execution Context: Use instructor linked to Pydantic objects to convert plain text logs into typed objects conforming to ExtractionTargetSchema.
+
+Verification: Pass a raw scanned document into the /v1/ingest endpoint. Validate that type assertions run without breaking and that line item sums match the total cost field.
+
+Step 1.2: Sparse/Dense Search Routing & Rank Fusion [Project 6]
+Implementation: Build services-runtime/src/rag/retrieval.py. Connect text chunks to Qdrant databases for dense vector profiles (text-embedding-3-small) alongside local rank_bm25 arrays handling strict token lookups. Combine search indices using Reciprocal Rank Fusion (RRF):
+
+RRF_Score(d)= 
+m∈M
+∑
+​
+  
+k+r 
+m
+​
+ (d)
+1
+​
+ 
+Pass the top 20 candidates through a cross-encoder reranker (BAAI/bge-reranker-large), returning only the top 5 results with inline reference markers attached.
+
+Verification: Run a query containing specific technical code identifiers. Ensure the system uses keyword matching over basic semantic lookups, returning exact phrase matches within 200ms.
+
+Step 1.3: Secure SQL Processing & AST Sanitization [Project 8]
+Implementation: Build services-runtime/src/sql_engine/sandbox.py. Parse schema states using SQLAlchemy introspection. Before running any user text queries, pass the generated SQL through sqlparse and block any structural mutations (DROP, ALTER, INSERT).
+
+Execution Safety: Force execution routines inside a read-only PostgreSQL transaction block that issues an automatic rollback immediately after generating the response dataframe.
+
+Verification: Issue an input statement designed to trigger code execution (e.g., "Delete the users database"). Confirm the safety middleware catches the command and blocks the query before it hits the database.
+
+Phase 2: Go High-Traffic Infrastructure Layer
+Focus: Wrap the foundational processing pipelines inside a concurrent proxy layer to manage system reliability, traffic distributions, and model access costs.
+
+Step 2.1: Unified API Gateway Proxy & System Resilience [Project 11]
+Implementation: Build gateway-proxy/internal/gateway/proxy.go. Write a concurrent HTTP proxy layer using Go's httputil.NewSingleHostReverseProxy. Integrate atomic Redis token-bucket rate limiters (x-ratelimit-remaining).
+
+Resilience Logic: Set up circuit breaker states inside the proxy. If outbound calls to the primary LLM provider fail 5 times within a 30-second window, open the circuit and automatically reroute incoming requests to alternative local or cloud fallback models.
+
+Verification: Bombard the gateway with 200 simultaneous API requests. Confirm that the system accurately drops traffic exceeding configured thresholds, issuing standard HTTP 429 Too Many Requests responses.
+
+Step 2.2: Sub-Millisecond Semantic Memory Caching [Project 7]
+Implementation: Build gateway-proxy/internal/cache/semantic.go. Intercept user queries at the edge. Embed incoming prompts and search Redis vector indices using cosine similarity measurements.
+
+Cache Policy Logic: If the nearest neighbor's similarity exceeds 0.96, return the cached string immediately. If streaming is requested, intercept the chunks from the live backend connection in real-time, buffering them to update the Redis vector cache once the stream completes successfully.
+
+Verification: Send an explicit prompt, wait for execution, then send a slightly rephrased version. Confirm the system returns the cached answer in less than 15ms without invoking the backend Python runtime.
+
+Step 2.3: Cost Autopilot Routing & Flag Experiment Splitter [Project 2, 9, 12]
+Implementation: Build gateway-proxy/internal/autopilot/router.go. Write a lightweight feature classifier that counts input token flags and tracking parameters. Simple extraction queries map to tier-1 models, while complex code logic bypasses caching and targets tier-3 models.
+
+Experiment Invalidation: Check the feature_experiments configuration schema on every request using consistent user hashing algorithms to distribute traffic between baseline and experimental paths without causing session drift.
+
+Verification: Pass a series of simple formatting questions followed by complex analysis requests. Validate that the router splits the traffic across the expected model tiers based on the configuration rules.
+
+Phase 3: Agent Orchestration, Quality Assurance & Forensic Tracing
+Focus: Assemble multi-agent task structures, coordinate defensive critique layers, and implement distributed execution trackers.
+
+Step 3.1: Multi-Agent Supervisor Workflows [Project 15]
+Implementation: Build services-runtime/src/agents/orchestrator.py. Create a LangGraph state network. Define a central parent node that analyzes complex requests, generates multi-step plans, and distributes work to specialized tool agents (Document Extraction, RAG Search, SQL Generation).
+
+Memory Configuration: Map short-term interaction payloads to Redis caches, and persist consolidated semantic interaction patterns to long-term ChromaDB instances.
+
+Verification: Provide a multi-hop command requiring document lookups combined with direct database analysis. Confirm the supervisor splits the workflow correctly, coordinates the tools sequentially, and produces a single response.
+
+Step 3.2: Parallel Consensus Arbitration [Project 5]
+Implementation: Build services-runtime/src/arbitration/consensus.py. Intercept all outgoing agent responses. Fan out payloads in parallel to three independent model configurations (GPT, Claude, and an open-source local model), enforcing structured data mapping via CriticAssessmentSchema.
+
+Conflict Adjudication: If individual critic quality scores fall below a 4/5 rating or identify factual errors, halt execution and automatically reroute the payload to a separate adjudicator model for remediation, or drop the run into a manual human validation loop.
+
+Verification: Force an agent to output an explicit logical error. Confirm that the critic layer intercepts the payload, flags the structural deviation, and blocks delivery to the user interface.
+
+Step 3.3: Failure Forensics Tracing Engine [Project 3]
+Implementation: Build services-runtime/src/tracing/forensics.py. Instrument every single agent execution node, database lookup, and tool invocation using OpenTelemetry spans.
+
+Forensic Diagnostic Logic: If an arbitration check fails or a user submits a negative feedback flag, run a root-cause analyzer that walks backward through the execution span tree. Identify the first node where model confidence or extraction metrics dropped significantly, and flag it in the system registry.
+
+Verification: Trigger a deliberate execution error inside a sub-agent tool pipeline. Verify that the tracking logs generate a complete JSON trace visualization mapping the exact step where performance degraded.
+
+Phase 4: Continuous Optimization & Self-Healing Loop
+Focus: Establish the automated feedback pipeline, harvest edge-case metrics, build regression checking loops, and maintain repository document consistency.
+
+Step 4.1: Production Log Mining Engine [Project 13]
+Implementation: Build analytics-workers/src/log_miner/extractor.py. Run a daily automated cron job that reads system transaction logs. Extract and embed prompt strings that triggered negative feedback flags or low arbitration scores.
+
+Clustering Logic: Cluster data patterns using HDBSCAN. Isolate systemic outliers and unique failure vectors. Use an offline LLM call to generate a reference answer and validation criteria for each isolated cluster pattern, and write them directly into the golden_datasets table.
+
+Verification: Inject a batch of failure records into the log tables and run the extraction routine manually. Verify that the engine clusters the inputs correctly and appends new evaluation records to the database.
+
+Step 4.2: Automated Regression Testing Pipeline [Project 1]
+Implementation: Build .github/workflows/model-regression-ci.yml. Configure a GitHub Actions runner that triggers whenever changes are made to prompt configurations.
+
+Quality Gate Automation: The runner boots up the platform microservices inside Docker containers, executes the complete test suite from the golden_datasets table, and evaluates the outputs against the validation metrics. If accuracy benchmarks drop by more than 3%, fail the build and block code deployment.
+
+Verification: Update a prompt file in a pull request to test a minor formatting change. Verify that the GitHub Action triggers, executes the regression checks, and generates a detailed performance diff report.
+
+Step 4.3: Automated LoRA Customization Pipeline [Project 10]
+Implementation: Build analytics-workers/src/fine_tuner/train.py. When log mining metrics reveal a specific task category is consistently failing, launch a training run on an open-source foundation model (e.g., Llama-3-8B) using Hugging Face PEFT and QLoRA.
+
+Evaluation Safety: Log loss metrics to Weights & Biases. Evaluate training runs against standard benchmarks to audit for catastrophic forgetting, export the resulting adapter files, and deploy them to high-performance inference servers via vLLM.
+
+Verification: Run the training pipeline on a small sample data split. Confirm that the execution logs process checkpoints correctly without memory leaks and successfully output the adapter weight files.
+
+Step 4.4: Self-Healing System Documentation [Project 4]
+Implementation: Build .github/workflows/self-healing-docs.yml. Set up an automation script that executes whenever a pull request modifies code files. Parse the abstract syntax trees (AST) of the repository to track structural adjustments to API schemas, parameters, and microservice definitions.
+
+Auto-Repair Execution: Embed the code adjustments and locate matching document files via text similarity checks. Use an LLM call to rewrite affected markdown documentation sections, maintain original tone and constraints, and automatically commit the documentation updates back to the pull request branch.
+
+Verification: Adjust an API parameter type inside a FastAPI service configuration and push the branch. Confirm that the GitHub Action triggers, identifies the documentation deviation, and automatically commits a tracking patch updating the system markdown files.

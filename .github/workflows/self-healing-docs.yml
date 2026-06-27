@@ -1,0 +1,7 @@
+# [Project 4] AST-Driven Documentation Sync
+# Full implementation: Phase 4, Step 4.4
+# Triggers on PRs that modify code files; parses AST diffs, locates affected docs,
+# and auto-commits LLM-rewritten markdown sections back to the PR branch.
+name: self-healing-docs
+on: {}
+jobs: {}

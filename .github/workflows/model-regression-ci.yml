@@ -1,0 +1,7 @@
+# [Project 1] Automated Evaluation Gates
+# Full implementation: Phase 4, Step 4.2
+# Triggers on prompt configuration changes; boots Docker services, runs golden_datasets
+# test suite, and fails the build if accuracy drops by more than 3%.
+name: model-regression-ci
+on: {}
+jobs: {}
