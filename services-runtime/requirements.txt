@@ -1,7 +1,5 @@
 # CoreMesh AI — Python Runtime Dependencies
 # Python 3.11+
-# Phase-specific ML/OCR libraries (easyocr, pytesseract, rank-bm25, hdbscan, peft)
-# are added in their respective implementation phases.
 
 # ---------------------------------------------------------------------------
 # Web Framework & API
@@ -14,21 +12,31 @@ python-multipart==0.0.20         # multipart form uploads
 # Data Validation & Serialisation
 # ---------------------------------------------------------------------------
 pydantic==2.11.7
-pydantic-settings==2.9.1
+pydantic-settings==2.10.1
 
 # ---------------------------------------------------------------------------
 # Agent Orchestration
 # ---------------------------------------------------------------------------
 langgraph==1.2.6
-langchain==0.3.25
-langchain-openai==0.3.18
-langchain-community==0.3.24
+langchain==1.3.11
+langchain-openai==1.3.3
+langchain-community==0.4.2
 
 # ---------------------------------------------------------------------------
 # Structured LLM Output (instructor → Pydantic)
 # ---------------------------------------------------------------------------
 instructor==1.15.3
-openai==1.91.0                   # primary LLM provider client
+openai==2.44.0                   # primary LLM provider client (>=2.26 required by langchain-openai)
+
+# ---------------------------------------------------------------------------
+# OCR / Document Processing (Phase 1 — Project 14)
+# ---------------------------------------------------------------------------
+pytesseract==0.3.13
+easyocr==1.7.2
+pdf2image==1.17.0
+Pillow==10.4.0
+opencv-python-headless==4.10.0.84
+numpy==1.26.4
 
 # ---------------------------------------------------------------------------
 # Vector Database

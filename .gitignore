@@ -30,6 +30,7 @@ gateway-proxy/*.out
 .env.*
 !.env.example
 *.secret
+plan/
 
 # IDE / Editor
 .vscode/
