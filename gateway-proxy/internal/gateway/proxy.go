@@ -19,6 +19,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/coremesh/gateway-proxy/internal/cache"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -291,6 +292,7 @@ func NewHandler(ctx context.Context, cfg Config) (http.Handler, error) {
 	if err != nil {
 		return nil, fmt.Errorf("invalid REDIS_URL: %w", err)
 	}
+	redisOptions.Protocol = 2
 
 	redisClient := redis.NewClient(redisOptions)
 	pingCtx, cancel := context.WithTimeout(ctx, defaultRedisConnectTimeout)
@@ -300,7 +302,32 @@ func NewHandler(ctx context.Context, cfg Config) (http.Handler, error) {
 		return nil, fmt.Errorf("redis ping failed: %w", err)
 	}
 
-	return NewProxy(cfg, NewRedisTokenBucket(redisClient, cfg.RateLimitCapacity, cfg.RateLimitRefillPerSecond))
+	proxy, err := NewProxy(cfg, NewRedisTokenBucket(redisClient, cfg.RateLimitCapacity, cfg.RateLimitRefillPerSecond))
+	if err != nil {
+		_ = redisClient.Close()
+		return nil, err
+	}
+
+	cacheCfg, err := cache.ConfigFromEnv()
+	if err != nil {
+		_ = redisClient.Close()
+		return nil, err
+	}
+	if !cacheCfg.Enabled {
+		return proxy, nil
+	}
+
+	embedder, err := cache.NewOpenAIEmbedder(cacheCfg)
+	if err != nil {
+		_ = redisClient.Close()
+		return nil, err
+	}
+	semanticCache, err := cache.NewSemanticCache(cacheCfg, cache.NewRedisStore(redisClient, cacheCfg), embedder)
+	if err != nil {
+		_ = redisClient.Close()
+		return nil, err
+	}
+	return semanticCache.Middleware(proxy), nil
 }
 
 // NewProxy builds a gateway proxy with an injected limiter, which keeps tests
@@ -450,16 +477,16 @@ type routeDecision struct {
 
 // CircuitBreaker tracks primary upstream failures over a rolling window.
 type CircuitBreaker struct {
-	mu                    sync.Mutex
-	state                 circuitState
-	failureThreshold      int
-	failureWindow         time.Duration
-	openDuration          time.Duration
-	halfOpenProbeTimeout  time.Duration
-	failures              []time.Time
-	openedAt              time.Time
-	halfOpenInFlight      bool
-	halfOpenStartedAt     time.Time
+	mu                   sync.Mutex
+	state                circuitState
+	failureThreshold     int
+	failureWindow        time.Duration
+	openDuration         time.Duration
+	halfOpenProbeTimeout time.Duration
+	failures             []time.Time
+	openedAt             time.Time
+	halfOpenInFlight     bool
+	halfOpenStartedAt    time.Time
 }
 
 // NewCircuitBreaker creates a rolling-window circuit breaker.
