@@ -10,17 +10,31 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"net/http"
+
+	"github.com/coremesh/gateway-proxy/internal/gateway"
 )
 
 func main() {
+	cfg, err := gateway.ConfigFromEnv()
+	if err != nil {
+		log.Fatalf("gateway config error: %v", err)
+	}
+
+	proxyHandler, err := gateway.NewHandler(context.Background(), cfg)
+	if err != nil {
+		log.Fatalf("gateway startup error: %v", err)
+	}
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		fmt.Fprintln(w, `{"status":"ok","service":"coremesh-gateway"}`)
 	})
+	mux.Handle("/", proxyHandler)
 
 	addr := ":8080"
 	log.Printf("CoreMesh Gateway Proxy listening on %s", addr)
