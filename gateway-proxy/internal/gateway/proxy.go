@@ -19,6 +19,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/coremesh/gateway-proxy/internal/autopilot"
 	"github.com/coremesh/gateway-proxy/internal/cache"
 	"github.com/redis/go-redis/v9"
 )
@@ -301,33 +302,68 @@ func NewHandler(ctx context.Context, cfg Config) (http.Handler, error) {
 		_ = redisClient.Close()
 		return nil, fmt.Errorf("redis ping failed: %w", err)
 	}
+	cleanup := func() {
+		_ = redisClient.Close()
+	}
 
 	proxy, err := NewProxy(cfg, NewRedisTokenBucket(redisClient, cfg.RateLimitCapacity, cfg.RateLimitRefillPerSecond))
 	if err != nil {
-		_ = redisClient.Close()
+		cleanup()
 		return nil, err
 	}
+
+	handler := http.Handler(proxy)
 
 	cacheCfg, err := cache.ConfigFromEnv()
 	if err != nil {
-		_ = redisClient.Close()
+		cleanup()
 		return nil, err
 	}
-	if !cacheCfg.Enabled {
-		return proxy, nil
+	if cacheCfg.Enabled {
+		embedder, err := cache.NewOpenAIEmbedder(cacheCfg)
+		if err != nil {
+			cleanup()
+			return nil, err
+		}
+		semanticCache, err := cache.NewSemanticCache(cacheCfg, cache.NewRedisStore(redisClient, cacheCfg), embedder)
+		if err != nil {
+			cleanup()
+			return nil, err
+		}
+		handler = semanticCache.Middleware(handler)
 	}
 
-	embedder, err := cache.NewOpenAIEmbedder(cacheCfg)
+	autopilotCfg, err := autopilot.ConfigFromEnv()
 	if err != nil {
-		_ = redisClient.Close()
+		cleanup()
 		return nil, err
 	}
-	semanticCache, err := cache.NewSemanticCache(cacheCfg, cache.NewRedisStore(redisClient, cacheCfg), embedder)
-	if err != nil {
-		_ = redisClient.Close()
-		return nil, err
+	if autopilotCfg.Enabled {
+		var experimentStore autopilot.ExperimentStore
+		var postgresStore *autopilot.PostgresExperimentStore
+		if strings.TrimSpace(autopilotCfg.PostgresDSN) != "" {
+			postgresStore, err = autopilot.NewPostgresExperimentStore(ctx, autopilotCfg.PostgresDSN, autopilotCfg.ExperimentLookupTimeout)
+			if err != nil {
+				cleanup()
+				return nil, fmt.Errorf("postgres experiment store: %w", err)
+			}
+			experimentStore = postgresStore
+			previousCleanup := cleanup
+			cleanup = func() {
+				postgresStore.Close()
+				previousCleanup()
+			}
+		}
+
+		router, err := autopilot.NewRouter(autopilotCfg, experimentStore)
+		if err != nil {
+			cleanup()
+			return nil, err
+		}
+		handler = router.Middleware(handler)
 	}
-	return semanticCache.Middleware(proxy), nil
+
+	return handler, nil
 }
 
 // NewProxy builds a gateway proxy with an injected limiter, which keeps tests

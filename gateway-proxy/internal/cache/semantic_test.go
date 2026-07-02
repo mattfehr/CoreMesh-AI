@@ -28,6 +28,15 @@ func (e fakeEmbedder) Embed(_ context.Context, text string) ([]float64, error) {
 	return []float64{1, 0, 0}, nil
 }
 
+type countingEmbedder struct {
+	count atomic.Int64
+}
+
+func (e *countingEmbedder) Embed(context.Context, string) ([]float64, error) {
+	e.count.Add(1)
+	return []float64{1, 0, 0}, nil
+}
+
 type memoryStore struct {
 	mu      sync.Mutex
 	entries map[string]Entry
@@ -219,6 +228,38 @@ func TestSemanticCacheBypassRestoresMalformedJSONBody(t *testing.T) {
 	}
 	if rec.Body.String() != `{"prompt":` {
 		t.Fatalf("backend body = %q, want original malformed body", rec.Body.String())
+	}
+}
+
+func TestSemanticCachePolicyBypassSkipsLookupAndStore(t *testing.T) {
+	store := newMemoryStore()
+	embedder := &countingEmbedder{}
+	semanticCache := newTestSemanticCache(t, store, embedder)
+	handler := semanticCache.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("backend read body: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, string(body))
+	}))
+
+	rec := httptest.NewRecorder()
+	req := jsonRequest(`{"model":"gpt-4o","prompt":"Analyze this complex code path."}`)
+	req.Header.Set(HeaderCachePolicy, cacheHeaderBypass)
+	handler.ServeHTTP(rec, req)
+
+	if got := rec.Header().Get(HeaderCache); got != cacheHeaderBypass {
+		t.Fatalf("%s = %q, want %q", HeaderCache, got, cacheHeaderBypass)
+	}
+	if embedder.count.Load() != 0 {
+		t.Fatalf("embedder calls = %d, want 0", embedder.count.Load())
+	}
+	if got := store.count(); got != 0 {
+		t.Fatalf("stored entries = %d, want 0", got)
+	}
+	if rec.Body.String() != `{"model":"gpt-4o","prompt":"Analyze this complex code path."}` {
+		t.Fatalf("backend body = %q, want original body", rec.Body.String())
 	}
 }
 

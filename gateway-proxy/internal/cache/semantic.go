@@ -33,6 +33,8 @@ const (
 
 	// HeaderCache reports whether semantic cache handling was a hit, miss, or bypass.
 	HeaderCache = "x-coremesh-cache"
+	// HeaderCachePolicy allows upstream middleware to bypass semantic cache work.
+	HeaderCachePolicy = "x-coremesh-cache-policy"
 
 	cacheHeaderHit    = "hit"
 	cacheHeaderMiss   = "miss"
@@ -235,6 +237,12 @@ func (c *SemanticCache) Middleware(next http.Handler) http.Handler {
 	}
 
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.EqualFold(strings.TrimSpace(r.Header.Get(HeaderCachePolicy)), cacheHeaderBypass) {
+			w.Header().Set(HeaderCache, cacheHeaderBypass)
+			next.ServeHTTP(w, r)
+			return
+		}
+
 		cacheReq, body, ok := extractRequest(r)
 		if !ok {
 			if body != nil {
