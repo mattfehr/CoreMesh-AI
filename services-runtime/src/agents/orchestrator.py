@@ -6,10 +6,13 @@ long-term memory around the workflow.
 """
 from __future__ import annotations
 
+import asyncio
 import base64
 import hashlib
+import inspect
 import json
 import logging
+import threading
 import time
 import uuid
 from dataclasses import dataclass, field, is_dataclass, asdict
@@ -19,6 +22,13 @@ from typing import Any, Mapping, Protocol, Sequence, TypedDict
 
 from pydantic import BaseModel, Field
 
+from src.arbitration.consensus import (
+    ArbitrationPayload,
+    ConsensusArbitrator,
+    ConsensusStatus,
+    ConsensusVerdict,
+    CriticFailure,
+)
 from src.config import settings
 
 log = logging.getLogger(__name__)
@@ -82,6 +92,7 @@ class OrchestrationResult(BaseModel):
     observations: list[ToolObservation]
     retrieved_memories: list[dict[str, Any]] = Field(default_factory=list)
     final_response: str
+    arbitration: ConsensusVerdict | None = None
 
 
 class _GraphState(TypedDict, total=False):
@@ -125,6 +136,11 @@ class SemanticMemory(Protocol):
         ...
 
     def store_interaction(self, result: OrchestrationResult) -> None:
+        ...
+
+
+class ResponseArbitrator(Protocol):
+    def arbitrate(self, payload: ArbitrationPayload) -> Any:
         ...
 
 
@@ -460,6 +476,7 @@ class OrchestratorDependencies:
     sql_tool: SpecialistTool = field(default_factory=SQLGenerationTool)
     short_term_memory: ShortTermMemory = field(default_factory=RedisShortTermMemory)
     semantic_memory: SemanticMemory = field(default_factory=ChromaSemanticMemory)
+    arbitrator: ResponseArbitrator = field(default_factory=ConsensusArbitrator)
 
 
 def build_supervisor_graph(dependencies: OrchestratorDependencies | None = None) -> Any:
@@ -526,6 +543,7 @@ def run_orchestration(
         retrieved_memories=state.retrieved_memories,
         final_response=state.final_response or "",
     )
+    result = _apply_arbitration(deps, result, payload)
     _store_long_term(deps, result)
     return result
 
@@ -757,6 +775,107 @@ def _persist_short_term(
         log.warning("short-term memory persistence failed: %s", exc)
 
 
+def _apply_arbitration(
+    deps: OrchestratorDependencies,
+    result: OrchestrationResult,
+    request: ExecutionRequestPayload,
+) -> OrchestrationResult:
+    if not (result.final_response or "").strip():
+        empty_payload = ArbitrationPayload(
+            output_text="[empty agent response]",
+            original_prompt=request.payload_query,
+            user_id=result.user_id,
+            feature_scope=result.feature_scope,
+            session_id=result.session_id,
+            metadata={
+                "workflow_status": result.status,
+                "observation_count": len(result.observations),
+            },
+        )
+        verdict = ConsensusVerdict.blocked(
+            empty_payload,
+            triggered_by=["empty_final_response"],
+        )
+        return result.model_copy(
+            update={
+                "arbitration": verdict,
+                "final_response": verdict.delivered_output,
+                "status": "blocked_by_arbitration",
+            }
+        )
+
+    payload = ArbitrationPayload(
+        output_text=result.final_response,
+        original_prompt=request.payload_query,
+        user_id=result.user_id,
+        feature_scope=result.feature_scope,
+        session_id=result.session_id,
+        metadata={
+            "workflow_status": result.status,
+            "observation_count": len(result.observations),
+        },
+    )
+
+    try:
+        verdict = _invoke_arbitrator(deps.arbitrator, payload)
+    except Exception as exc:  # pragma: no cover - protects production path
+        log.warning("response arbitration failed closed: %s", exc)
+        verdict = ConsensusVerdict.blocked(
+            payload,
+            failures=[
+                CriticFailure(
+                    evaluation_dimension="arbitration",
+                    provider_name="runtime",
+                    error=str(exc),
+                )
+            ],
+            triggered_by=["arbitrator_runtime_failure"],
+        )
+
+    updates: dict[str, Any] = {
+        "arbitration": verdict,
+        "final_response": verdict.delivered_output,
+    }
+    if verdict.status == ConsensusStatus.REMEDIATED:
+        updates["status"] = "remediated_by_arbitration"
+    elif not verdict.delivery_allowed:
+        updates["status"] = "blocked_by_arbitration"
+
+    return result.model_copy(update=updates)
+
+
+def _invoke_arbitrator(
+    arbitrator: ResponseArbitrator,
+    payload: ArbitrationPayload,
+) -> ConsensusVerdict:
+    maybe_verdict = arbitrator.arbitrate(payload)
+    if inspect.isawaitable(maybe_verdict):
+        maybe_verdict = _await_sync(maybe_verdict)
+    return ConsensusVerdict.model_validate(maybe_verdict)
+
+
+def _await_sync(awaitable: Any) -> Any:
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(awaitable)
+
+    box: dict[str, Any] = {}
+
+    def runner() -> None:
+        try:
+            box["value"] = asyncio.run(awaitable)
+        except BaseException as exc:  # pragma: no cover - defensive bridge
+            box["error"] = exc
+
+    thread = threading.Thread(target=runner, daemon=True)
+    thread.start()
+    thread.join()
+    if "error" in box:
+        raise box["error"]
+    return box.get("value")
+
+
 def _store_long_term(deps: OrchestratorDependencies, result: OrchestrationResult) -> None:
     try:
         deps.semantic_memory.store_interaction(result)
@@ -954,6 +1073,7 @@ __all__ = [
     "OrchestratorDependencies",
     "PlanStep",
     "RedisShortTermMemory",
+    "ResponseArbitrator",
     "SQLGenerationTool",
     "SQLQueryGenerator",
     "SpecialistName",

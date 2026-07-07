@@ -4,14 +4,57 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
+from src.arbitration.consensus import (  # noqa: E402
+    BLOCKED_RESPONSE,
+    ConsensusStatus,
+    ConsensusVerdict,
+    CriticAssessmentSchema,
+)
 from src.agents.orchestrator import (  # noqa: E402
     ExecutionRequestPayload,
     InMemorySemanticMemory,
     InMemoryShortTermMemory,
+    OrchestrationResult,
     OrchestratorDependencies,
     SpecialistName,
+    _apply_arbitration,
     run_orchestration,
 )
+
+
+def _clean_assessments():
+    return [
+        CriticAssessmentSchema(
+            evaluation_dimension=dimension,
+            assigned_score=5,
+            flagged_anomalies=[],
+            confidence_coefficient=0.9,
+        )
+        for dimension in ("factual", "logic", "completeness")
+    ]
+
+
+class PassingArbitrator:
+    def __init__(self):
+        self.payloads = []
+
+    async def arbitrate(self, payload):
+        self.payloads.append(payload)
+        return ConsensusVerdict.pass_verdict(payload, _clean_assessments())
+
+
+class BlockingArbitrator:
+    def __init__(self):
+        self.payloads = []
+
+    async def arbitrate(self, payload):
+        self.payloads.append(payload)
+        return ConsensusVerdict.blocked(
+            payload,
+            status=ConsensusStatus.BLOCKED,
+            assessments=_clean_assessments(),
+            triggered_by=["logic_flagged_anomalies"],
+        )
 
 
 class FakeRAGTool:
@@ -74,6 +117,25 @@ class FakeSQLTool:
         }
 
 
+class LogicalErrorSQLTool:
+    def __init__(self, order):
+        self.order = order
+        self.calls = []
+
+    def run(self, request, step, observations):
+        self.order.append(SpecialistName.SQL_GENERATION)
+        self.calls.append((request, step, list(observations)))
+        return {
+            "sql": "SELECT '2 + 2 = 5' AS claim",
+            "columns": ["claim"],
+            "rows": [{"claim": "2 + 2 = 5"}],
+            "row_count": 1,
+            "elapsed_ms": 1.0,
+            "limit_applied": False,
+            "prior_observations": [],
+        }
+
+
 def test_supervisor_splits_and_coordinates_multi_hop_document_and_db_workflow():
     invocation_order = []
     rag_tool = FakeRAGTool(invocation_order)
@@ -88,12 +150,14 @@ def test_supervisor_splits_and_coordinates_multi_hop_document_and_db_workflow():
             }
         ]
     )
+    arbitrator = PassingArbitrator()
     dependencies = OrchestratorDependencies(
         rag_tool=rag_tool,
         document_tool=document_tool,
         sql_tool=sql_tool,
         short_term_memory=short_term_memory,
         semantic_memory=semantic_memory,
+        arbitrator=arbitrator,
     )
     request = ExecutionRequestPayload(
         user_id="user-123",
@@ -142,6 +206,8 @@ def test_supervisor_splits_and_coordinates_multi_hop_document_and_db_workflow():
     assert short_term_memory.states[-1][0] == "session-multihop"
     assert len(semantic_memory.stored_results) == 1
     assert semantic_memory.stored_results[0].session_id == "session-multihop"
+    assert len(arbitrator.payloads) == 1
+    assert result.arbitration.status == ConsensusStatus.PASSED
     assert "[policy:retention-policy]" in result.final_response
     assert "Acme Analytics" in result.final_response
     assert "SQL analysis executed" in result.final_response
@@ -150,12 +216,14 @@ def test_supervisor_splits_and_coordinates_multi_hop_document_and_db_workflow():
 def test_orchestration_accepts_binary_document_bytes_in_session_context():
     invocation_order = []
     document_tool = FakeDocumentTool(invocation_order)
+    arbitrator = PassingArbitrator()
     dependencies = OrchestratorDependencies(
         rag_tool=FakeRAGTool(invocation_order),
         document_tool=document_tool,
         sql_tool=FakeSQLTool(invocation_order),
         short_term_memory=InMemoryShortTermMemory(),
         semantic_memory=InMemorySemanticMemory(),
+        arbitrator=arbitrator,
     )
     raw_document = b"\x89PNG\r\n\x1a\n\xff\xfe invoice-bytes"
     request = ExecutionRequestPayload(
@@ -174,3 +242,66 @@ def test_orchestration_accepts_binary_document_bytes_in_session_context():
     assert result.status == "completed"
     assert invocation_order == [SpecialistName.DOCUMENT_EXTRACTION]
     assert len(document_tool.calls) == 1
+    assert len(arbitrator.payloads) == 1
+
+
+def test_orchestration_blocks_final_response_when_arbitration_flags_logical_error():
+    invocation_order = []
+    sql_tool = LogicalErrorSQLTool(invocation_order)
+    arbitrator = BlockingArbitrator()
+    dependencies = OrchestratorDependencies(
+        rag_tool=FakeRAGTool(invocation_order),
+        document_tool=FakeDocumentTool(invocation_order),
+        sql_tool=sql_tool,
+        short_term_memory=InMemoryShortTermMemory(),
+        semantic_memory=InMemorySemanticMemory(),
+        arbitrator=arbitrator,
+    )
+    request = ExecutionRequestPayload(
+        user_id="user-logical-error",
+        feature_scope="analysis",
+        payload_query="Analyze the database and return the claim.",
+        session_context={"session_id": "session-logical-error"},
+    )
+
+    result = run_orchestration(request, dependencies)
+
+    assert result.status == "blocked_by_arbitration"
+    assert invocation_order == [SpecialistName.SQL_GENERATION]
+    assert len(sql_tool.calls) == 1
+    assert len(arbitrator.payloads) == 1
+    assert "2 + 2 = 5" in arbitrator.payloads[0].output_text
+    assert result.final_response == BLOCKED_RESPONSE
+    assert "2 + 2 = 5" not in result.final_response
+    assert result.arbitration.status == ConsensusStatus.BLOCKED
+
+
+def test_orchestration_blocks_empty_final_response_without_crashing():
+    request = ExecutionRequestPayload(
+        user_id="user-empty",
+        feature_scope="analysis",
+        payload_query="Return nothing.",
+        session_context={"session_id": "session-empty"},
+    )
+    empty_result = OrchestrationResult(
+        session_id="session-empty",
+        user_id="user-empty",
+        feature_scope="analysis",
+        status="completed",
+        plan=[],
+        observations=[],
+        final_response="",
+    )
+    dependencies = OrchestratorDependencies(
+        short_term_memory=InMemoryShortTermMemory(),
+        semantic_memory=InMemorySemanticMemory(),
+        arbitrator=PassingArbitrator(),
+    )
+
+    result = _apply_arbitration(dependencies, empty_result, request)
+
+    assert result.status == "blocked_by_arbitration"
+    assert result.final_response == BLOCKED_RESPONSE
+    assert result.arbitration is not None
+    assert "empty_final_response" in result.arbitration.triggered_by
+    assert len(dependencies.arbitrator.payloads) == 0

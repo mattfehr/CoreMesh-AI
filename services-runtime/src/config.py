@@ -15,6 +15,17 @@ class Settings(BaseSettings):
     openai_extraction_model: str = "gpt-4o-mini"
     openai_vision_model: str = "gpt-4o"
     openai_embedding_model: str = "text-embedding-3-small"
+    openai_arbitration_model: str = "gpt-4o-mini"
+    openai_adjudicator_model: str = "gpt-4o-mini"
+
+    # Anthropic / local model arbitration
+    anthropic_api_key: str = ""
+    anthropic_arbitration_model: str = "claude-3-5-sonnet-latest"
+    ollama_base_url: str = "http://localhost:11434"
+    ollama_arbitration_model: str = "llama3.1"
+    arbitration_score_threshold: int = 4
+    arbitration_retry_attempts: int = 2
+    arbitration_timeout_seconds: float = 30.0
 
     # OCR
     ocr_variance_threshold: float = 0.08
