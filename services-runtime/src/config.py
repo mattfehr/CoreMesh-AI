@@ -28,6 +28,9 @@ class Settings(BaseSettings):
     qdrant_collection: str = "coremesh_chunks"
     qdrant_vector_size: int = 1536
     reranker_model: str = "BAAI/bge-reranker-large"
+    chroma_persist_directory: str = ".chroma/coremesh-agents"
+    chroma_collection: str = "coremesh_agent_memory"
+    agent_memory_ttl_seconds: int = 3600
 
     # Hybrid retrieval (RRF + reranker) tuning
     rag_dense_weight: float = 1.0
