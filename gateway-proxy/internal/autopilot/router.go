@@ -1,4 +1,11 @@
 // Package autopilot contains request-time model routing and experiment splits.
+//
+// System role: it is the gateway's outer middleware, rewriting eligible JSON
+// LLM requests before semantic-cache lookup and upstream admission.
+// Dependencies: net/http and JSON implement classification; an optional pgx
+// store reads feature_experiments from PostgreSQL.
+// Side effects: middleware buffers/replaces request bodies and adds routing
+// headers; an enabled store opens a connection pool and performs timed reads.
 package autopilot
 
 import (
@@ -28,18 +35,22 @@ const (
 	defaultExperimentFlag  = "cost_autopilot_routing"
 	defaultAutopilotEnable = true
 
+	// Tier1 and Tier3 identify the inexpensive and complex model routes.
 	Tier1 = "tier-1"
 	Tier3 = "tier-3"
 
+	// Experiment variants describe whether and how a rollout affected routing.
 	VariantNone         = "none"
 	VariantBaseline     = "baseline"
 	VariantExperimental = "experimental"
 
 	defaultExperimentLookupTimeout = 2 * time.Second
 
+	// Cache policies coordinate classification with the inner semantic cache.
 	CachePolicyAllow  = "allow"
 	CachePolicyBypass = "bypass"
 
+	// Routing headers expose the decision to inner middleware and callers.
 	HeaderAutopilotTier      = "X-CoreMesh-Autopilot-Tier"
 	HeaderRoutedModel        = "X-CoreMesh-Routed-Model"
 	HeaderExperimentVariant  = "X-CoreMesh-Experiment-Variant"

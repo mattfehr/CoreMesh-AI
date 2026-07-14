@@ -1,3 +1,8 @@
+// Module: behavioral tests for semantic-cache HTTP and storage contracts.
+// System role: protects eligibility, scope isolation, fail-open behavior,
+// vector lookup, response capture, and Redis serialization.
+// Dependencies: Go testing, injected fakes, and local HTTP test primitives.
+// Side effects: none outside process memory.
 package cache
 
 import (

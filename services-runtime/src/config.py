@@ -1,9 +1,22 @@
+"""Typed configuration for every Python runtime subsystem.
+
+System role:
+    Centralizes environment names/defaults shared by HTTP ingestion and the
+    library-only retrieval, SQL, agent-memory, and arbitration paths.
+Dependencies:
+    pydantic-settings reads process variables and services-runtime/.env.
+Side effects:
+    The module-level settings instance reads and validates configuration during
+    import; it performs no network connection or persistent write.
+"""
+
 from typing import Optional
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
+    """Environment-backed runtime settings with local-development defaults."""
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
@@ -50,7 +63,10 @@ class Settings(BaseSettings):
 
     @property
     def llm_available(self) -> bool:
+        """Return whether OpenAI-backed ingestion paths should be selected."""
         return bool(self.openai_api_key)
 
 
+# Import-time construction gives all modules one immutable-by-convention view
+# of process configuration. Reload the process after environment changes.
 settings = Settings()

@@ -1,4 +1,14 @@
-"""Vision-LLM text extraction fallback (GPT-4o via instructor).
+"""Vision-LLM text extraction fallback (GPT-4o via Instructor).
+
+System role:
+    Provides the expensive last-resort page transcription used when traditional
+    OCR engines disagree beyond the configured threshold.
+Dependencies:
+    Uses Pillow and NumPy for PNG encoding plus lazily imported Instructor and
+    OpenAI clients configured through runtime settings.
+Side effects:
+    Base64-encodes a page in memory, transmits its contents to OpenAI, can incur
+    provider cost/latency, and logs the returned character count.
 
 Called when the dual-OCR variance exceeds the configured threshold,
 signalling that traditional OCR is struggling with the page quality.
@@ -19,6 +29,7 @@ log = logging.getLogger(__name__)
 
 
 class _ExtractedPageText(BaseModel):
+    """Private structured-output envelope that excludes model commentary."""
     raw_text: str = Field(
         description=(
             "All text visible in the document image, preserving the original structure: "
@@ -33,6 +44,9 @@ def extract_text_via_vision(page_image: np.ndarray) -> str:
     Uses ``instructor`` to enforce the ``_ExtractedPageText`` Pydantic schema so
     that the model always returns a clean ``raw_text`` string rather than
     conversational commentary.
+
+    Provider and structured-output failures propagate to the processor, which
+    retains the best traditional OCR text.
 
     Raises ``RuntimeError`` if ``OPENAI_API_KEY`` is not configured.
     """

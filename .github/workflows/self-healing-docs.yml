@@ -1,7 +1,11 @@
-# [Project 4] AST-Driven Documentation Sync
-# Full implementation: Phase 4, Step 4.4
-# Triggers on PRs that modify code files; parses AST diffs, locates affected docs,
-# and auto-commits LLM-rewritten markdown sections back to the PR branch.
+# Module: placeholder documentation-synchronization workflow.
+# Role: reserves the planned CI entry point for detecting code/documentation
+# drift after structural source changes.
+# Dependencies: GitHub Actions; the future implementation will require AST
+# analysis, code-to-document mappings, and an authenticated update mechanism.
+# Side effects: none today. Empty triggers and jobs keep this workflow inert.
+#
+# Roadmap source: CoreMesh Phase 4.4 / AI Engineering Guide Project 4.
 name: self-healing-docs
 on: {}
 jobs: {}

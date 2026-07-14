@@ -1,3 +1,8 @@
+// Module: behavioral tests for complexity routing and stable experiments.
+// System role: protects model rewrite, cache-policy, rollout, and degradation
+// contracts at the gateway's outer boundary.
+// Dependencies: Go testing plus local fakes and httptest-style HTTP objects.
+// Side effects: none outside process memory.
 package autopilot
 
 import (

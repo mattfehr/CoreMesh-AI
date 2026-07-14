@@ -1,6 +1,15 @@
 #!/usr/bin/env python3
 """Send simultaneous requests through the CoreMesh gateway.
 
+System role:
+    Live verification of gateway token-bucket behavior under a synchronized
+    burst; this is an operator tool, not part of the serving process.
+Dependencies:
+    Python standard library and already-running Redis, gateway, and upstream.
+Side effects:
+    Sends concurrent HTTP requests and writes a status summary to stdout/stderr;
+    the gateway consequently mutates Redis rate-limit state.
+
 The script is intentionally standard-library only so it can run from a fresh
 Windows shell without extra Python packages.
 
@@ -19,6 +28,7 @@ import urllib.request
 
 
 def send_request(url: str, team_id: str, timeout: float) -> int | str:
+    """Send one identified request and normalize HTTP/network outcomes."""
     request = urllib.request.Request(url, headers={"X-Team-ID": team_id})
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:
@@ -32,12 +42,14 @@ def send_request(url: str, team_id: str, timeout: float) -> int | str:
 
 
 def is_upstream_failure(status: int | str) -> bool:
+    """Return whether a normalized outcome means no upstream was usable."""
     if isinstance(status, str):
         return status.startswith("error:")
     return status in {502, 503, 504}
 
 
 def main() -> int:
+    """Run the configured burst and fail unless rate limiting is observable."""
     parser = argparse.ArgumentParser(
         description="Fire simultaneous requests at the CoreMesh gateway proxy."
     )

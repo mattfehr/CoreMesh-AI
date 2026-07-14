@@ -1,6 +1,16 @@
 #!/usr/bin/env python3
 """Verification script for the CoreMesh document ingestion pipeline (Step 1.1).
 
+System role:
+    End-to-end local smoke test of fixture generation, FastAPI upload handling,
+    OCR, offline/online extraction, and arithmetic validation.
+Dependencies:
+    Runtime Python dependencies plus native Tesseract; EasyOCR and OpenAI are
+    optional according to normal runtime fallback rules.
+Side effects:
+    Rewrites fixtures/synthetic_invoice.png, runs CPU/native OCR, may call
+    OpenAI when a key is configured, and prints assertions.
+
 Usage
 -----
     cd services-runtime
@@ -57,6 +67,7 @@ FIXTURE_PATH = os.path.join(FIXTURE_DIR, "synthetic_invoice.png")
 # ---------------------------------------------------------------------------
 
 def _load_monospace_font(size: int) -> ImageFont.FreeTypeFont:
+    """Load a cross-platform monospace font, degrading to Pillow's default."""
     candidates = [
         "C:/Windows/Fonts/cour.ttf",
         "C:/Windows/Fonts/courbd.ttf",
@@ -150,6 +161,7 @@ def generate_invoice_image() -> bytes:
 # ---------------------------------------------------------------------------
 
 def _preflight() -> None:
+    """Report optional/native dependency availability without aborting the run."""
     print("Pre-flight checks")
     print("-" * 40)
 
@@ -190,6 +202,7 @@ _failures: list[str] = []
 
 
 def _assert(condition: bool, label: str) -> None:
+    """Record and print one verification outcome."""
     status = "PASS" if condition else "FAIL"
     print(f"  [{status}] {label}")
     if not condition:
@@ -201,6 +214,7 @@ def _assert(condition: bool, label: str) -> None:
 # ---------------------------------------------------------------------------
 
 def run_verification() -> None:
+    """Generate the fixture, call FastAPI in process, and assert known values."""
     print("=" * 64)
     print("CoreMesh Step 1.1 — Ingestion Pipeline Verification")
     print("=" * 64)

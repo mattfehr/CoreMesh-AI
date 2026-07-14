@@ -1,3 +1,8 @@
+// Module: gateway reverse-proxy and circuit-breaker behavior tests.
+// System role: protects admission headers, body replay, fallback selection,
+// rolling failures, and concurrent half-open probe invariants.
+// Dependencies: Go testing and process-local httptest upstream servers.
+// Side effects: opens loopback test listeners that are closed by each test.
 package gateway
 
 import (

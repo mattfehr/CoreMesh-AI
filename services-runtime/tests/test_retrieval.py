@@ -1,3 +1,14 @@
+"""Hybrid retrieval ranking and index-contract tests.
+
+System role:
+    Protects tokenization, stable IDs, dense/sparse fusion, reranking, technical
+    identifier priority, and deterministic result metadata.
+Dependencies:
+    pytest-compatible discovery and injected in-memory embedding/index fakes.
+Side effects:
+    None outside process memory; no OpenAI, Qdrant, or model download occurs.
+"""
+
 import sys
 import time
 from pathlib import Path

@@ -1,6 +1,18 @@
-"""Image preprocessing pipeline: deskew, grayscale, binarize, denoise.
+"""Image preprocessing primitives for OCR-ready page arrays.
 
-Applied to every page before OCR to maximise text legibility.
+System role:
+    Normalizes Pillow pages before the OCR ensemble and also supplies an
+    unadjusted grayscale image for offline candidate comparison.
+Dependencies:
+    Pillow supplies decoded pages; NumPy and OpenCV perform color conversion,
+    rotation, thresholding, morphology, and contrast adjustment.
+Side effects:
+    Allocates image arrays and uses CPU only; it performs no file, network, or
+    persistent-state I/O.
+
+The default pipeline applies deskew, grayscale, and mild contrast adjustment.
+Binarization and denoising remain opt-in helpers because they can damage clean
+rendered text.
 """
 import logging
 from typing import List
@@ -17,11 +29,13 @@ log = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 def pil_to_bgr(image: Image.Image) -> np.ndarray:
+    """Copy a Pillow image into OpenCV's BGR channel order."""
     rgb = np.array(image.convert("RGB"))
     return cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
 
 
 def gray_to_pil(image: np.ndarray) -> Image.Image:
+    """Wrap a grayscale NumPy array as a Pillow image."""
     return Image.fromarray(image)
 
 
@@ -107,4 +121,5 @@ def page_to_grayscale(image: Image.Image) -> np.ndarray:
 
 
 def preprocess_pages(pages: List[Image.Image]) -> List[np.ndarray]:
+    """Preprocess pages in input order and return one OCR array per page."""
     return [preprocess_page(p) for p in pages]

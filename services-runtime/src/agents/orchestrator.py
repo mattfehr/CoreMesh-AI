@@ -1,5 +1,16 @@
 """LangGraph supervisor workflow for CoreMesh Project 15.
 
+System role:
+    Coordinates library-only document, retrieval, and SQL specialists, records
+    working/semantic memory, synthesizes their observations, and sends every
+    final response through the consensus delivery gate.
+Dependencies:
+    Pydantic defines state contracts; LangGraph is optional; default tools use
+    ingestion, RAG, SQL, Redis, Chroma, and multi-provider arbitration.
+Side effects:
+    Invoked workflows can read files, call databases/model providers, write
+    Redis session events and Chroma summaries, and log degraded dependencies.
+
 The supervisor decomposes a complex runtime request into ordered specialist
 steps, executes document/RAG/SQL tool nodes, and records short-term and
 long-term memory around the workflow.
@@ -35,6 +46,7 @@ log = logging.getLogger(__name__)
 
 
 class SpecialistName(str, Enum):
+    """Stable graph node names for the three implemented specialist domains."""
     RAG_SEARCH = "rag_search"
     DOCUMENT_EXTRACTION = "document_extraction"
     SQL_GENERATION = "sql_generation"
@@ -50,6 +62,7 @@ class ExecutionRequestPayload(BaseModel):
 
 
 class PlanStep(BaseModel):
+    """One ordered specialist assignment in the supervisor plan."""
     step_id: str
     specialist: SpecialistName
     objective: str
@@ -60,6 +73,7 @@ class PlanStep(BaseModel):
 
 
 class ToolObservation(BaseModel):
+    """Auditable input, output, status, error, and latency for one tool step."""
     observation_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     step_id: str
     specialist: SpecialistName
@@ -72,6 +86,7 @@ class ToolObservation(BaseModel):
 
 
 class SupervisorState(BaseModel):
+    """Mutable graph state shared by supervisor and specialist nodes."""
     request: ExecutionRequestPayload
     session_id: str
     plan: list[PlanStep] = Field(default_factory=list)
@@ -84,6 +99,7 @@ class SupervisorState(BaseModel):
 
 
 class OrchestrationResult(BaseModel):
+    """Public completed workflow including evidence and arbitration verdict."""
     session_id: str
     user_id: str
     feature_scope: str
@@ -108,6 +124,7 @@ class _GraphState(TypedDict, total=False):
 
 
 class SpecialistTool(Protocol):
+    """Structural interface implemented by every specialist adapter."""
     def run(
         self,
         request: ExecutionRequestPayload,
@@ -118,6 +135,7 @@ class SpecialistTool(Protocol):
 
 
 class ShortTermMemory(Protocol):
+    """Working-state/event sink scoped to one execution session."""
     def save_state(self, session_id: str, state: Mapping[str, Any]) -> None:
         ...
 
@@ -126,6 +144,7 @@ class ShortTermMemory(Protocol):
 
 
 class SemanticMemory(Protocol):
+    """Long-term similarity lookup and completed-interaction sink."""
     def retrieve_similar(
         self,
         user_id: str,
@@ -140,6 +159,7 @@ class SemanticMemory(Protocol):
 
 
 class ResponseArbitrator(Protocol):
+    """Delivery-gate interface used after workflow synthesis."""
     def arbitrate(self, payload: ArbitrationPayload) -> Any:
         ...
 
@@ -240,6 +260,7 @@ class DocumentExtractionTool:
 
 
 class SQLQueryGenerator(Protocol):
+    """Strategy interface that turns an agent step and schema into SQL."""
     def generate_sql(
         self,
         request: ExecutionRequestPayload,
@@ -471,6 +492,7 @@ class InMemorySemanticMemory:
 
 @dataclass
 class OrchestratorDependencies:
+    """Replaceable tools, memory stores, and arbitrator used by a graph."""
     rag_tool: SpecialistTool = field(default_factory=HybridRAGSearchTool)
     document_tool: SpecialistTool = field(default_factory=DocumentExtractionTool)
     sql_tool: SpecialistTool = field(default_factory=SQLGenerationTool)
@@ -480,7 +502,7 @@ class OrchestratorDependencies:
 
 
 def build_supervisor_graph(dependencies: OrchestratorDependencies | None = None) -> Any:
-    """Build the LangGraph state network for the Project 15 supervisor."""
+    """Build a LangGraph network or the contract-compatible sequential fallback."""
 
     deps = dependencies or OrchestratorDependencies()
     nodes = _build_nodes(deps)
@@ -521,7 +543,11 @@ def run_orchestration(
     request: ExecutionRequestPayload | Mapping[str, Any],
     dependencies: OrchestratorDependencies | None = None,
 ) -> OrchestrationResult:
-    """Execute a supervisor workflow and return a synthesized result."""
+    """Execute specialists, arbitrate output, persist memory, and return evidence.
+
+    Storage failures are logged and degraded so work can continue. Arbitration
+    failures are fail-closed and replace the deliverable with a blocked verdict.
+    """
 
     deps = dependencies or OrchestratorDependencies()
     payload = ExecutionRequestPayload.model_validate(request)

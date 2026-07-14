@@ -1,3 +1,15 @@
+"""Supervisor orchestration and memory integration tests.
+
+System role:
+    Protects planning, specialist dispatch, partial failure, memory, and
+    arbitration contracts for the library-only agent workflow.
+Dependencies:
+    pytest-compatible discovery and injected in-memory tools/stores.
+Side effects:
+    Uses temporary/in-memory state only; no Redis, Chroma, database, or model
+    provider is contacted.
+"""
+
 import sys
 from pathlib import Path
 

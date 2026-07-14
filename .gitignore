@@ -1,3 +1,10 @@
+# Module: repository-local ignore policy.
+# Role: keeps generated artifacts, local credentials, caches, and editor state
+# out of CoreMesh source control.
+# Dependencies: interpreted by Git and tools that honor .gitignore syntax.
+# Side effects: matching untracked paths are hidden from normal Git status and
+# add operations; already-tracked files are unaffected.
+
 # Python
 __pycache__/
 *.py[cod]

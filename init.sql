@@ -1,6 +1,10 @@
--- CoreMesh AI — PostgreSQL 16 Initialization Script
--- Schemas: prompt_registry, feature_experiments, golden_datasets
--- Mounted by docker-compose into /docker-entrypoint-initdb.d/ and executed on first boot.
+-- Module: CoreMesh PostgreSQL bootstrap schema.
+-- Role: creates the prompt/experiment/evaluation metadata contracts consumed
+-- by planned control-plane features and the gateway autopilot experiment store.
+-- Dependencies: PostgreSQL 16; mounted by docker-compose.yml under
+-- /docker-entrypoint-initdb.d/.
+-- Side effects: creates three persistent tables. This script is intentionally
+-- non-idempotent and is executed only when PostgreSQL initializes a new volume.
 
 -- ---------------------------------------------------------------------------
 -- [Project 9] Prompt Version Registry

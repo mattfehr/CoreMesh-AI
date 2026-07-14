@@ -1,6 +1,16 @@
 #!/usr/bin/env python3
 """Verify CoreMesh autopilot model routing through the gateway.
 
+System role:
+    Live black-box check of simple/complex model routing, cache policy, and
+    optional experiment variants at the gateway boundary.
+Dependencies:
+    Python standard library and a running gateway; semantic caching should be
+    disabled unless its embedding dependencies are intentionally under test.
+Side effects:
+    Sends HTTP requests and prints diagnostics; configured gateway middleware
+    may read PostgreSQL and mutate Redis admission/cache state.
+
 The script is intentionally standard-library only. It treats any HTTP response
 as usable if the gateway adds autopilot headers, so the upstream runtime does
 not need to implement chat completions for the routing check to be meaningful.
@@ -25,6 +35,7 @@ from dataclasses import dataclass
 
 @dataclass(frozen=True)
 class Case:
+    """Expected routing decision for one representative prompt."""
     name: str
     prompt: str
     expected_tier: str
@@ -34,12 +45,14 @@ class Case:
 
 @dataclass(frozen=True)
 class Result:
+    """Normalized HTTP outcome retained even for non-2xx responses."""
     status: int | str
     headers: dict[str, str]
     body: str
 
 
 def send(url: str, user_id: str, case: Case, timeout: float) -> Result:
+    """Send one OpenAI-shaped JSON request through the gateway."""
     payload = {
         "model": "client-selected-model",
         "messages": [{"role": "user", "content": case.prompt}],
@@ -67,6 +80,7 @@ def send(url: str, user_id: str, case: Case, timeout: float) -> Result:
 
 
 def header(headers: dict[str, str], name: str) -> str:
+    """Read a response header case-insensitively."""
     name_lower = name.lower()
     for key, value in headers.items():
         if key.lower() == name_lower:
@@ -75,6 +89,7 @@ def header(headers: dict[str, str], name: str) -> str:
 
 
 def validate(case: Case, result: Result) -> list[str]:
+    """Return human-readable mismatches between headers and expectations."""
     failures: list[str] = []
     tier = header(result.headers, "X-CoreMesh-Autopilot-Tier")
     model = header(result.headers, "X-CoreMesh-Routed-Model")
@@ -101,6 +116,7 @@ def validate(case: Case, result: Result) -> list[str]:
 
 
 def main() -> int:
+    """Execute routing cases and return a shell-friendly pass/fail code."""
     parser = argparse.ArgumentParser(
         description="Verify CoreMesh autopilot simple-vs-complex routing headers."
     )

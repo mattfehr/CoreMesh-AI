@@ -1,3 +1,15 @@
+"""Guarded SQL safety, schema, and execution tests.
+
+System role:
+    Protects the text-to-SQL trust boundary: statement filtering, dangerous
+    functions, row limits, read-only execution, and result materialization.
+Dependencies:
+    pytest and temporary/in-memory SQLAlchemy SQLite engines.
+Side effects:
+    Creates transient database objects in memory; no configured PostgreSQL
+    database is contacted.
+"""
+
 import sys
 from pathlib import Path
 from unittest.mock import MagicMock

@@ -1,5 +1,15 @@
 """Structured invoice data extraction.
 
+System role:
+    Converts OCR text into the typed invoice contract returned by the ingestion
+    API and reused by the document-extraction agent.
+Dependencies:
+    Uses Pydantic schemas and runtime settings; the online path lazily imports
+    Instructor and the OpenAI client, while the offline path uses regex only.
+Side effects:
+    The online path sends OCR text to OpenAI and can incur cost; both paths log
+    non-sensitive extraction summaries and otherwise keep no state.
+
 Two execution paths:
   - LLM path  (``OPENAI_API_KEY`` set): ``instructor`` + gpt-4o-mini enforces
     ``ExtractionTargetSchema`` via Pydantic.
@@ -33,7 +43,12 @@ _USER_TEMPLATE = (
 # ---------------------------------------------------------------------------
 
 def extract_with_llm(text: str) -> ExtractionTargetSchema:
-    """Use instructor + gpt-4o-mini to produce a typed ``ExtractionTargetSchema``."""
+    """Extract a schema-validated invoice with the configured OpenAI model.
+
+    The full OCR text crosses the external-provider boundary. Provider,
+    authentication, transport, or validation errors deliberately propagate so
+    callers can report a failed extraction instead of silently changing modes.
+    """
     import instructor  # noqa: PLC0415
     from openai import OpenAI  # noqa: PLC0415
 
@@ -136,7 +151,12 @@ def _extract_line_items(text: str) -> List[Dict[str, Any]]:
 
 
 def extract_with_regex(text: str) -> ExtractionTargetSchema:
-    """Deterministic regex-based extraction.  Used when ``OPENAI_API_KEY`` is absent."""
+    """Extract the canonical demo-invoice layout without network access.
+
+    Missing scalar values become UNKNOWN or zero and unmatched line items are
+    omitted. This is a deterministic offline/demo parser, not a general invoice
+    understanding engine.
+    """
     text = _normalize_ocr_text(text)
 
     vendor_m = re.search(r"VENDOR\s*:?\s*(.+?)(?:\n|$)", text, re.IGNORECASE)
@@ -194,6 +214,9 @@ def extract_structured(text: str) -> Tuple[ExtractionTargetSchema, bool]:
     Selects the LLM path when ``OPENAI_API_KEY`` is configured; falls back
     to the offline regex parser otherwise.
     """
+    # Configuration chooses one stable execution mode. An online failure is
+    # surfaced instead of falling back to regex with materially different
+    # extraction semantics.
     if settings.llm_available:
         return extract_with_llm(text), True
     return extract_with_regex(text), False

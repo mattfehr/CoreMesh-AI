@@ -1,5 +1,16 @@
 """Dual-engine OCR: pytesseract (primary) + EasyOCR (secondary).
 
+System role:
+    Produces page text and disagreement provenance for the ingestion processor,
+    which decides whether a vision-model escalation is warranted.
+Dependencies:
+    Requires the native Tesseract executable through pytesseract; EasyOCR is an
+    optional lazy dependency backed by CPU model weights.
+Side effects:
+    Runs CPU-intensive native/model inference, may download EasyOCR weights on
+    first initialization, mutates pytesseract's configured command, and logs
+    engine availability. It performs no document persistence.
+
 Both engines run on every preprocessed page.  Their outputs are compared
 using a normalised edit-distance variance metric.  If the engines agree
 (variance ≤ threshold) the higher-confidence reading is used directly.
@@ -22,6 +33,7 @@ _easyocr_reader = None
 
 
 def _get_easyocr_reader():
+    """Return the process-wide CPU reader, caching permanent initialization failure."""
     global _easyocr_reader
     if _easyocr_reader is None:
         try:
@@ -36,6 +48,7 @@ def _get_easyocr_reader():
 
 
 def _configure_tesseract() -> None:
+    """Apply the optional executable path to pytesseract's global configuration."""
     if settings.tesseract_cmd:
         pytesseract.pytesseract.tesseract_cmd = settings.tesseract_cmd
 
@@ -203,7 +216,8 @@ def run_dual_ocr_with_fallback(page_image: np.ndarray, raw_gray: np.ndarray) -> 
     if easy_raw is not None:
         candidates.append((easy_raw, easy_conf_raw, "easyocr_raw"))
 
-    # Variance across primary preprocessed engine pair.
+    # Use raw-vs-preprocessed Tesseract disagreement as the fallback signal
+    # when EasyOCR could not initialize; zero would falsely imply agreement.
     if easy_pre is not None:
         variance = compute_variance(tess_pre, easy_pre)
     else:

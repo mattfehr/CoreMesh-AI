@@ -1,5 +1,12 @@
 // Package gateway contains the CoreMesh edge proxy for rate limiting and
 // provider resilience.
+//
+// System role: it composes optional autopilot/cache middleware around mandatory
+// distributed admission and primary/fallback reverse proxying.
+// Dependencies: Redis provides atomic token buckets; net/http provides reverse
+// proxy transport; sibling packages provide routing and semantic caching.
+// Side effects: construction connects to Redis and optional stores/providers;
+// requests mutate Redis state, buffer replayable bodies, and call upstreams.
 package gateway
 
 import (

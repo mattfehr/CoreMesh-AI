@@ -1,5 +1,15 @@
 """Document ingestion processor — CoreMesh Step 1.1 (Project 14).
 
+System role:
+    Owns the synchronous end-to-end ingestion transaction used by FastAPI's
+    worker thread and by the document-extraction agent specialist.
+Dependencies:
+    Uses Pillow/pdf2image loaders, NumPy/OpenCV preprocessing, both OCR engines,
+    runtime settings, optional OpenAI fallbacks, extraction, and validation.
+Side effects:
+    Decodes uploads in memory, invokes CPU/native OCR, may call OpenAI and incur
+    cost, and emits progress logs. It does not persist the document or result.
+
 Orchestrates the full pipeline:
     loader → preprocess → dual OCR → variance / vision-fallback
     → structured extraction → invoice total validation
@@ -30,6 +40,7 @@ log = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 def _load_pdf(file_bytes: bytes) -> List[Image.Image]:
+    """Render all PDF pages at 300 DPI using Poppler through pdf2image."""
     from pdf2image import convert_from_bytes  # noqa: PLC0415
 
     return convert_from_bytes(
@@ -40,11 +51,13 @@ def _load_pdf(file_bytes: bytes) -> List[Image.Image]:
 
 
 def _load_image(file_bytes: bytes) -> List[Image.Image]:
+    """Decode one raster upload from memory and normalize it to RGB."""
     img = Image.open(io.BytesIO(file_bytes)).convert("RGB")
     return [img]
 
 
 def _load_pages(file_bytes: bytes, filename: str) -> List[Image.Image]:
+    """Choose PDF rendering by filename suffix; otherwise decode as one image."""
     ext = filename.lower().rsplit(".", 1)[-1] if "." in filename else ""
     if ext == "pdf":
         return _load_pdf(file_bytes)
@@ -109,6 +122,15 @@ def process_document(file_bytes: bytes, filename: str) -> IngestResponse:
     Returns:
         A fully populated :class:`IngestResponse` including extraction,
         OCR metadata, and invoice-total validation result.
+
+    Raises:
+        Loader, native OCR, or configured LLM errors when the pipeline cannot
+        produce a trustworthy result. Vision escalation errors alone degrade
+        to the best traditional OCR candidate.
+
+    Side effects:
+        Performs the CPU, native-process, logging, and optional provider calls
+        described by this module; no input or result is persisted here.
     """
     t_start = time.perf_counter()
 
@@ -119,7 +141,8 @@ def process_document(file_bytes: bytes, filename: str) -> IngestResponse:
     # 2. Preprocess
     preprocessed = preprocess_pages(pages)
 
-    # 3. OCR all pages; track worst-case variance and dominant engine
+    # Report the engine attached to the worst-disagreement page because that
+    # page is the one most likely to explain a low-confidence document result.
     page_texts: list[str] = []
     max_variance = 0.0
     any_vision = False

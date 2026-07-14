@@ -1,3 +1,14 @@
+"""Consensus arbitration contract tests.
+
+System role:
+    Protects critic quorum, retry/timeout, adjudication, degradation, and
+    delivery-blocking behavior before agent output can be released.
+Dependencies:
+    pytest, Pydantic, asyncio, and injected in-memory provider fakes.
+Side effects:
+    None outside process memory; no live provider calls are made.
+"""
+
 import asyncio
 import sys
 from pathlib import Path

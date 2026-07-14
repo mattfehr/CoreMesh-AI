@@ -1,5 +1,14 @@
 """Invoice total validation.
 
+System role:
+    Adds a deterministic arithmetic quality signal after structured extraction
+    and before the ingestion result crosses the API or agent boundary.
+Dependencies:
+    Consumes ingestion Pydantic models and Python numeric conversion only.
+Side effects:
+    Logs validation outcomes and malformed line totals; performs no mutation,
+    network access, or persistence.
+
 Verifies that the sum of extracted line-item totals plus the calculated tax
 matches the ``invoice_total`` field within a configurable monetary tolerance.
 """
@@ -24,6 +33,9 @@ def validate_invoice_totals(
 
     Returns a :class:`ValidationResult` with ``passed=True`` when the absolute
     delta is within *tolerance*.
+
+    This validator checks extracted line-total arithmetic only. It does not
+    recompute quantity times unit price or validate vendor/business policy.
     """
     line_total = 0.0
     for item in extraction.line_items:

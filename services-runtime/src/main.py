@@ -1,5 +1,16 @@
 """CoreMesh AI — Python Runtime Service.
 
+System role:
+    Owns the public runtime HTTP boundary. Only liveness and document ingestion
+    are mounted today; RAG, SQL, orchestration, and arbitration remain Python
+    library APIs.
+Dependencies:
+    FastAPI handles HTTP/multipart contracts, ingestion owns blocking document
+    work, and structlog emits request lifecycle metadata.
+Side effects:
+    Import configures structlog and constructs the FastAPI app. Requests read
+    uploads into memory, run CPU/native work in a thread, and may call OpenAI.
+
 Entry point for uvicorn: ``src.main:app``
 """
 import asyncio
@@ -41,6 +52,7 @@ _ALLOWED_CONTENT_TYPES = {
 
 @app.get("/health", tags=["ops"], summary="Service liveness check.")
 async def health() -> dict:
+    """Return process liveness without contacting infrastructure providers."""
     return {"status": "ok", "service": "coremesh-runtime"}
 
 
@@ -63,6 +75,12 @@ async def health() -> dict:
     ),
 )
 async def ingest_document(file: UploadFile = File(...)) -> IngestResponse:
+    """Validate and process one in-memory PDF or raster upload.
+
+    Unsupported declared media types return 415, empty bodies return 400, and
+    loader/OCR/extraction failures are normalized to 422. The full upload is
+    read before processing, so production callers need an outer size limit.
+    """
     if file.content_type not in _ALLOWED_CONTENT_TYPES:
         raise HTTPException(
             status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
@@ -82,6 +100,8 @@ async def ingest_document(file: UploadFile = File(...)) -> IngestResponse:
     log.info("ingest.start", filename=file.filename, size_bytes=len(file_bytes))
 
     try:
+        # OCR and image/model clients are synchronous and CPU/blocking. Moving
+        # the pipeline off the event-loop thread preserves FastAPI concurrency.
         result: IngestResponse = await asyncio.to_thread(
             process_document, file_bytes, file.filename or "upload"
         )

@@ -1,3 +1,11 @@
+# Module: local CoreMesh stateful-infrastructure stack.
+# Role: supplies PostgreSQL metadata, Redis rate-limit/cache state, and Qdrant
+# vectors to the gateway and Python runtime; application services run
+# separately during development.
+# Dependencies: Docker Compose, the referenced container images, and init.sql.
+# Side effects: creates named persistent volumes, a bridge network, containers,
+# and host port bindings. PostgreSQL runs init.sql only for a new data volume.
+
 version: "3.9"
 
 networks:

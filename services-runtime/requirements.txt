@@ -1,4 +1,10 @@
 # CoreMesh AI — Python Runtime Dependencies
+# Module: pinned Python runtime dependency manifest.
+# Role: supplies the FastAPI service and ingestion/RAG/SQL/agent libraries.
+# Dependencies: interpreted by pip for Python 3.11+.
+# Side effects: installation downloads packages, native wheels, and transitive
+# dependencies into the selected environment; some model weights load later.
+#
 # Python 3.11+
 
 # ---------------------------------------------------------------------------

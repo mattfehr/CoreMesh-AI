@@ -1,4 +1,11 @@
 // Package cache contains the CoreMesh semantic response cache.
+//
+// System role: it is optional gateway middleware between autopilot and edge
+// admission, serving semantically similar successful LLM responses.
+// Dependencies: OpenAI produces embeddings and Redis Stack supplies hashes,
+// TTLs, and a RediSearch HNSW vector index.
+// Side effects: eligible requests can call OpenAI, create a Redis index, read
+// and write cached response bodies, and increment hit counters.
 package cache
 
 import (

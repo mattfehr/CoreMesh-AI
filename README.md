@@ -1,155 +1,223 @@
 # CoreMesh AI
 
-Enterprise-grade AI Agent Platform for Corporate Knowledge and Automation.
+CoreMesh is an AI engineering platform prototype that combines a Go edge
+gateway with a Python intelligent runtime and local stateful infrastructure.
+The repository implements several production-oriented building blocks while
+retaining clearly marked placeholders for later roadmap phases.
 
-## Architecture Overview
+The checked-in code and the directory READMEs are the source of truth for what
+works today. The original [project blueprint](plan/coremesh.txt) describes a
+larger target system and should not be read as an implementation-status report.
 
-```
-[ User / Client Application ]
-          │
-          ▼
-┌─────────────────────────────────────────────────────┐
-│ 1. GO GATEWAY PROXY LAYER (:8080)                   │
-│   Prompt Registry · Traffic Splitter · Semantic     │
-│   Cache · Cost Autopilot · Resiliency Engine        │
-└───────────────────────┬─────────────────────────────┘
-                        │
-                        ▼
-┌─────────────────────────────────────────────────────┐
-│ 2. PYTHON RUNTIME LAYER (:8000)                     │
-│   Document Ingestion · Hybrid RAG · LangGraph       │
-│   Supervisor · Text-to-SQL · Output Arbitration     │
-└───────────────────────┬─────────────────────────────┘
-                        │
-         ┌──────────────┼──────────────┐
-         ▼              ▼              ▼
-    PostgreSQL 16    Redis 7.2      Qdrant
-    (metadata)       (cache)        (vectors)
-```
+## What runs today
 
-## Repository Structure
+- The Go gateway on port 8080 provides Redis-backed token-bucket admission,
+  primary/fallback reverse proxying, a concurrency-safe circuit breaker,
+  request-complexity model routing, experiment splits, and an optional semantic
+  response cache.
+- The FastAPI runtime on port 8000 exposes liveness and document-ingestion
+  endpoints. Ingestion performs image preprocessing, dual-engine OCR, optional
+  vision fallback, structured extraction, and invoice-total validation.
+- The runtime also contains tested library APIs for hybrid retrieval, guarded
+  SQL, supervisor orchestration with memory, and multi-model consensus. Those
+  libraries are not yet exposed as HTTP routes.
+- Docker Compose starts PostgreSQL, Redis Stack, and Qdrant only. Application
+  processes are run separately.
+- Tracing, offline analytics workers, prompt/flag management packages, and both
+  GitHub Actions workflows remain documented placeholders.
 
-```
-.
-├── .github/workflows/
-│   ├── model-regression-ci.yml   # [Phase 4] Automated evaluation gates
-│   └── self-healing-docs.yml     # [Phase 4] AST-driven documentation sync
-├── gateway-proxy/                # Go 1.22 — traffic controller
-│   ├── cmd/main.go
-│   ├── internal/
-│   │   ├── autopilot/            # [Phase 2] Complexity-based model routing
-│   │   ├── cache/                # [Phase 2] Redis semantic memory proxy
-│   │   ├── flags/                # [Phase 2] Feature flag evaluation
-│   │   ├── gateway/              # [Phase 2] Token buckets & circuit breakers
-│   │   └── registry/             # [Phase 2] Hot-reload prompt control
-│   ├── go.mod
-│   └── Dockerfile
-├── services-runtime/             # Python 3.11 — async microservice layer
-│   ├── src/
-│   │   ├── ingestion/            # [Phase 1] Multi-modal OCR processors
-│   │   ├── rag/                  # [Phase 1] Dense/sparse retrieval pipelines
-│   │   ├── sql_engine/           # [Phase 1] Guardrailed text-to-SQL
-│   │   ├── agents/               # [Phase 3] LangGraph supervisor workflows
-│   │   ├── arbitration/          # [Phase 3] Parallel model critic pools
-│   │   └── tracing/              # [Phase 3] Forensics trace listeners
-│   ├── requirements.txt
-│   └── Dockerfile
-├── analytics-workers/            # Background automation infrastructure
-│   └── src/
-│       ├── log_miner/            # [Phase 4] HDBSCAN curation loop
-│       └── fine_tuner/           # [Phase 4] PEFT/QLoRA training pipeline
-├── docker-compose.yml
-├── init.sql                      # PostgreSQL schema bootstrap
-└── README.md
-```
+See [ARCHITECTURE.md](ARCHITECTURE.md) for detailed flows and state ownership.
 
-## Infrastructure Stack
+## Runtime topology
 
-| Component | Technology | Purpose |
-|-----------|-----------|---------|
-| Edge Proxy | Go 1.22 | Concurrent reverse proxy, rate limiting, circuit breaking |
-| Runtime Engine | Python 3.11 + FastAPI | Async microservices, LangGraph agents |
-| Cache / Vector Cache | Redis 7.2 (redis-stack) | Token buckets, semantic embedding cache (HNSW) |
-| Metadata Store | PostgreSQL 16 | Prompt registry, experiments, golden datasets |
-| Vector Index | Qdrant | Dense + sparse spatial document indices |
+~~~text
+Client
+  |
+  v
+Go gateway :8080
+  |-- /healthz ------------------------------------> local response
+  |
+  |-- autopilot model routing
+  |-- optional semantic cache
+  |-- Redis token-bucket admission
+  |-- circuit-breaker primary/fallback selection
+  |
+  v
+Python runtime :8000
+  |-- /health
+  |-- /v1/ingest
+  |
+  +--> OCR engines / optional OpenAI calls
 
-## Local Development — Quick Start
+Shared and optional state:
+  Redis Stack <---- rate limits and semantic cache
+  PostgreSQL  <---- experiment metadata
+  Qdrant      <---- hybrid-retrieval vectors
+  Chroma      <---- long-term agent memory when orchestration is invoked
+~~~
+
+Middleware order matters. Requests enter autopilot first, then the optional
+semantic cache, then rate limiting and proxy resilience. This lets complex
+requests declare a cache bypass before cache lookup and ensures cache misses
+still pass through admission control.
+
+## Repository map
+
+| Path | Responsibility |
+| --- | --- |
+| [gateway-proxy](gateway-proxy/README.md) | Go edge admission, routing, caching, and upstream resilience. |
+| [services-runtime](services-runtime/README.md) | FastAPI ingestion service and intelligent-runtime libraries. |
+| [analytics-workers](analytics-workers/README.md) | Documented placeholders for offline log mining and fine-tuning. |
+| [.github](.github/README.md) | Repository automation; current workflows are intentionally inert. |
+| [ARCHITECTURE.md](ARCHITECTURE.md) | Cross-service flows, state, failure boundaries, and implementation status. |
+| [DOCUMENTATION.md](DOCUMENTATION.md) | Required file headers, docstrings, comments, directory READMEs, and upkeep checklist. |
+| <code>docker-compose.yml</code> | Local PostgreSQL, Redis Stack, Qdrant, volumes, network, and health checks. |
+| <code>init.sql</code> | First-boot PostgreSQL schema for prompt versions, experiments, and golden datasets. |
+
+Each major source and test directory has its own README. Start there before
+changing a subsystem; it records local invariants, dependencies, side effects,
+and focused test commands.
+
+## Quick start
 
 ### Prerequisites
-- Docker Desktop 4.x+
-- Go 1.22+
-- Python 3.11+
 
-### 1. Start the data layer
+- Docker Desktop with Compose
+- Go 1.22 or newer
+- Python 3.11 or newer
+- Tesseract and Poppler for host-based document ingestion; the runtime
+  Dockerfile installs the Linux packages
+- An OpenAI API key only for LLM extraction, vision fallback, embeddings,
+  OpenAI arbitration, or semantic caching
 
-```bash
+EasyOCR and cross-encoder models can download weights on first use. Plan for
+network access, startup time, and local cache space when invoking those paths.
+
+### 1. Start stateful infrastructure
+
+~~~powershell
 docker compose up -d
-```
+docker compose ps
+~~~
 
-This boots PostgreSQL 16, Redis 7.2 (redis-stack), and Qdrant. The `init.sql`
-file is automatically executed by PostgreSQL on first launch, creating the
-`prompt_registry`, `feature_experiments`, and `golden_datasets` tables.
+This creates persistent named volumes and exposes development ports. The
+PostgreSQL image runs <code>init.sql</code> only while initializing a new
+volume. Re-running the non-idempotent script against an existing schema will
+fail because the tables already exist.
 
-### 2. Verify services
+### 2. Start the Python runtime
 
-```bash
-# PostgreSQL
-docker exec coremesh-postgres pg_isready -U coremesh -d coremesh
-
-# Redis
-docker exec coremesh-redis redis-cli ping
-
-# Qdrant
-curl http://localhost:6333/healthz
-```
-
-### Service Ports
-
-| Service | Port | Notes |
-|---------|------|-------|
-| PostgreSQL | 5432 | User: `coremesh` / Pass: `coremesh_secret` / DB: `coremesh` |
-| Redis | 6379 | RedisInsight UI on 8001 |
-| Qdrant REST | 6333 | |
-| Qdrant gRPC | 6334 | |
-| Gateway Proxy | 8080 | Go service (Phase 2) |
-| Runtime API | 8000 | Python/FastAPI service (Phase 1) |
-
-### 3. Run the Go gateway (Phase 2+)
-
-```bash
-cd gateway-proxy
-go run ./cmd/main.go
-```
-
-### 4. Run the Python runtime (Phase 1+)
-
-```bash
-cd services-runtime
+~~~powershell
+Set-Location services-runtime
 python -m venv .venv
-.venv/Scripts/activate      # Windows
-# source .venv/bin/activate  # Linux/macOS
-pip install -r requirements.txt
-uvicorn src.main:app --reload --port 8000
-```
+.venv\Scripts\Activate.ps1
+python -m pip install -r requirements.txt
+Copy-Item .env.example .env
+python -m uvicorn src.main:app --reload --port 8000
+~~~
 
-## Implementation Phases
+The example environment file contains placeholders. Remove or replace example
+API keys; an empty OpenAI key selects deterministic local extraction paths
+where supported.
 
-| Phase | Focus |
-|-------|-------|
-| **Phase 1** | Python Processing Engine — OCR ingestion, hybrid RAG, SQL guardrails |
-| **Phase 2** | Go Gateway Layer — reverse proxy, rate limiting, semantic cache, cost autopilot |
-| **Phase 3** | Agent Orchestration — LangGraph supervisor, consensus arbitration, forensic tracing |
-| **Phase 4** | Continuous Optimization — log mining, regression CI, LoRA fine-tuning, self-healing docs |
+Check liveness:
 
-## Environment Variables
+~~~powershell
+Invoke-RestMethod http://localhost:8000/health
+~~~
 
-Copy `.env.example` (to be created in Phase 1) to `.env` before running services.
+See the [runtime guide](services-runtime/README.md) for ingestion examples,
+native OCR requirements, configuration, and library-level usage.
 
-Key variables:
+### 3. Start the Go gateway
 
-```
-OPENAI_API_KEY=
-POSTGRES_DSN=postgresql://coremesh:coremesh_secret@localhost:5432/coremesh
-REDIS_URL=redis://localhost:6379
-QDRANT_URL=http://localhost:6333
-```
+With Redis and the runtime available:
+
+~~~powershell
+Set-Location gateway-proxy
+go run ./cmd
+~~~
+
+The gateway verifies Redis during startup and exits if it cannot connect. By
+default both primary and fallback point to <code>http://localhost:8000</code>,
+autopilot routing is enabled, and semantic caching enables itself only when an
+OpenAI key is present unless explicitly configured otherwise.
+
+Check the gateway itself:
+
+~~~powershell
+Invoke-RestMethod http://localhost:8080/healthz
+~~~
+
+See the [gateway guide](gateway-proxy/README.md) for every environment variable,
+request/response header, cache rule, identity key, circuit transition, and
+verification script.
+
+## HTTP surface
+
+| Process | Method and path | Behavior |
+| --- | --- | --- |
+| Gateway | <code>GET /healthz</code> | Local liveness response; bypasses proxy middleware. |
+| Runtime | <code>GET /health</code> | Runtime liveness response. |
+| Runtime through gateway | <code>POST /v1/ingest</code> | Accepts PDF or supported raster multipart uploads and returns OCR/extraction/validation metadata. |
+
+The RAG, SQL, orchestration, and arbitration modules currently expose Python
+APIs, not HTTP endpoints.
+
+## Test and verification commands
+
+Run Python tests from <code>services-runtime</code> so imports and relative
+paths match the service layout:
+
+~~~powershell
+Set-Location services-runtime
+python -m pytest -q
+python scripts/verify_ingestion.py
+~~~
+
+Run gateway unit tests from <code>gateway-proxy</code>:
+
+~~~powershell
+Set-Location gateway-proxy
+go test ./...
+~~~
+
+The gateway scripts exercise live routing and load behavior and require running
+dependencies. Their usage and expected assertions are documented in
+[gateway-proxy/scripts](gateway-proxy/scripts/README.md).
+
+## Implementation status
+
+| Capability | Status and integration |
+| --- | --- |
+| Gateway rate limiting and circuit breaking | Implemented and active for proxied requests. |
+| Cost autopilot and experiment routing | Implemented; autopilot is enabled by default, PostgreSQL experiments are optional. |
+| Semantic response cache | Implemented; optional and dependent on Redis Stack plus an embedding provider. |
+| Document ingestion | Implemented and exposed at <code>/v1/ingest</code>. |
+| Hybrid RAG | Implemented as a Python library; not mounted on FastAPI. |
+| Guarded text-to-SQL | Implemented as a Python library; not mounted on FastAPI. |
+| Agent orchestration and memory | Implemented as a Python library; not mounted on FastAPI. |
+| Consensus arbitration | Implemented as a Python library; not mounted on FastAPI. |
+| Prompt registry and feature-flag packages | Database contracts or directories exist; application packages are placeholders. |
+| Forensic tracing | Placeholder directory only. |
+| Log mining and fine-tuning | Placeholder directories only. |
+| Regression and documentation CI | Inert workflow stubs with no triggers or jobs. |
+
+## Operational and security notes
+
+This is a local-development stack, not a hardened deployment:
+
+- Compose contains a visible development PostgreSQL password.
+- The gateway and runtime implement no authentication or TLS termination.
+- Some service ports bind to the host; inspect <code>docker-compose.yml</code>
+  before using an untrusted network.
+- Uploads are read into memory before OCR and may be sent to OpenAI when the
+  corresponding key and fallback path are active.
+- Redis stores rate-limit state and optional cached model responses. PostgreSQL,
+  Qdrant, and Chroma can persist application data when their library paths are
+  used.
+- Model/API calls can incur cost and transmit content to external providers.
+
+Treat the documented headers and READMEs as part of each module contract. The
+maintenance rules in [DOCUMENTATION.md](DOCUMENTATION.md) explain what must be
+updated alongside future behavior changes.

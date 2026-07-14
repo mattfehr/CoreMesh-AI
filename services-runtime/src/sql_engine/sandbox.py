@@ -1,4 +1,15 @@
-"""Guardrailed SQL execution for CoreMesh text-to-SQL workflows."""
+"""Guardrailed SQL execution for CoreMesh text-to-SQL workflows.
+
+System role:
+    Defense-in-depth trust boundary between generated SQL and the configured
+    relational database, used by the supervisor's SQL specialist.
+Dependencies:
+    sqlparse performs lexical/statement checks and SQLAlchemy introspects and
+    executes against the configured engine.
+Side effects:
+    Introspection reads metadata; execute opens a connection, requests a
+    read-only transaction, materializes bounded results, then rolls back/closes.
+"""
 from __future__ import annotations
 
 import logging
@@ -23,6 +34,7 @@ class UnsafeSQLError(ValueError):
 
 @dataclass(frozen=True)
 class SQLSandboxConfig:
+    """Immutable allow/block policy and result-bound configuration."""
     row_limit: int = 1_000
     enforce_limit: bool = True
     read_only_transaction_sql: str = "SET TRANSACTION READ ONLY"
@@ -64,6 +76,7 @@ class SQLSandboxConfig:
 
 @dataclass(frozen=True)
 class ColumnSchema:
+    """Portable column description returned during introspection."""
     name: str
     type: str
     nullable: bool
@@ -72,6 +85,7 @@ class ColumnSchema:
 
 @dataclass(frozen=True)
 class ForeignKeySchema:
+    """Portable foreign-key description returned during introspection."""
     constrained_columns: list[str]
     referred_table: str | None
     referred_columns: list[str]
@@ -80,6 +94,7 @@ class ForeignKeySchema:
 
 @dataclass(frozen=True)
 class TableSchema:
+    """Portable table, column, key, and schema description."""
     name: str
     columns: list[ColumnSchema]
     primary_key: list[str] = field(default_factory=list)
@@ -89,11 +104,13 @@ class TableSchema:
 
 @dataclass(frozen=True)
 class DatabaseSchema:
+    """Complete introspected table set visible to the configured engine."""
     tables: list[TableSchema]
 
 
 @dataclass(frozen=True)
 class QueryResult:
+    """Materialized rows plus executed SQL, timing, and limit provenance."""
     sql: str
     columns: list[str]
     rows: list[dict[str, Any]]
@@ -104,6 +121,7 @@ class QueryResult:
 
 @dataclass(frozen=True)
 class SanitizedSQL:
+    """Validated SQL text and whether the sandbox appended a row limit."""
     sql: str
     limit_applied: bool
 
@@ -126,6 +144,7 @@ class SQLSandbox:
         self.config = config or SQLSandboxConfig()
 
     def introspect_schema(self, schema: str | None = None) -> DatabaseSchema:
+        """Read visible table/column/key metadata through SQLAlchemy inspection."""
         inspector = inspect(self.engine)
         tables: list[TableSchema] = []
 
@@ -167,6 +186,12 @@ class SQLSandbox:
         return DatabaseSchema(tables=tables)
 
     def sanitize_sql(self, sql: str) -> SanitizedSQL:
+        """Validate one SELECT and append a row limit when required.
+
+        Raises:
+            UnsafeSQLError: If input is empty, multi-statement, non-SELECT, or
+                contains a blocked keyword or function.
+        """
         stripped = sql.strip()
         if not stripped:
             self._block("SQL query is empty.", sql)
@@ -195,6 +220,7 @@ class SQLSandbox:
         )
 
     def execute(self, sql: str) -> QueryResult:
+        """Sanitize and execute SQL in an always-rolled-back read-only transaction."""
         sanitized = self.sanitize_sql(sql)
         started = time.perf_counter()
         connection = self.engine.connect()
@@ -215,6 +241,8 @@ class SQLSandbox:
                 limit_applied=sanitized.limit_applied,
             )
         finally:
+            # Roll back even successful SELECT work so database/session state
+            # cannot leak through functions, temporary objects, or future code.
             transaction.rollback()
             connection.close()
 

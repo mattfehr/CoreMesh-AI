@@ -1,3 +1,8 @@
+DOCUMENT TYPE: Architecture specification and incremental roadmap reference
+ROLE: Supplies original design intent; it is not an implementation-status source
+DEPENDENCIES: None at runtime; maintainers and documentation may consult it
+SIDE EFFECTS: None; this text is never loaded by a CoreMesh process
+
 COREMESH AI: SPECIFICATION DOCUMENT & INCREMENTAL IMPLEMENTATION BLUEPRINT
 This blueprint defines the architecture, data contracts, and implementation steps for CoreMesh AI: an enterprise-grade AI Agent Platform for Corporate Knowledge and Automations [source: 2].
 

@@ -1,3 +1,8 @@
+// Module: Redis token-bucket concurrency and HTTP admission tests.
+// System role: proves the distributed limiter's Lua semantics and its
+// integration with the edge proxy.
+// Dependencies: Go testing and an in-process miniredis server.
+// Side effects: opens a loopback fake-Redis listener and temporary goroutines.
 package gateway
 
 import (

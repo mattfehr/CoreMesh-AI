@@ -1,4 +1,14 @@
-"""Agent orchestration components for CoreMesh."""
+"""Public agent-orchestration API.
+
+System role:
+    Re-exports supervisor request/result contracts, dependency injection, and
+    graph execution for trusted Python callers.
+Dependencies:
+    Importing this package loads the orchestrator, arbitration contracts, and
+    runtime settings; provider/storage clients remain lazy.
+Side effects:
+    No network or persistence occurs until a graph is built and invoked.
+"""
 
 from src.agents.orchestrator import (
     ExecutionRequestPayload,

@@ -1,12 +1,11 @@
-// Package main is the entry point for the CoreMesh AI Gateway Proxy.
+// Package main assembles and starts the CoreMesh edge gateway.
 //
-// Phase 2 implementation will wire together:
-//   - HTTP reverse proxy to the Python runtime layer (Project 11)
-//   - Redis-backed token-bucket rate limiter (Project 11)
-//   - Circuit breaker with automatic fallback routing (Project 11)
-//   - Cosine-similarity semantic cache (Project 7)
-//   - Cost autopilot complexity classifier (Project 2)
-//   - Feature experiment traffic splitter (Project 9, 12)
+// System role: it owns process startup, the local health endpoint, and the
+// catch-all handoff to gateway middleware.
+// Dependencies: internal/gateway constructs Redis admission, optional routing
+// and cache middleware, and primary/fallback reverse proxies.
+// Side effects: startup reads environment variables, connects to Redis and
+// optional providers/stores, opens port 8080, and exits on fatal errors.
 package main
 
 import (

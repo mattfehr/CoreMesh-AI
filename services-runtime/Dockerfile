@@ -1,4 +1,10 @@
 # CoreMesh AI — Python Runtime Service (Python 3.11)
+# Module: Python intelligent-runtime container image.
+# Role: packages the FastAPI ingestion service and native OCR dependencies.
+# Dependencies: Python 3.11 Debian base, apt repositories, requirements.txt,
+# and src; the compose file does not start this image automatically.
+# Side effects: build downloads OS/Python packages; runtime opens port 8000 and
+# invoked endpoints can run OCR and external model calls.
 FROM python:3.11-slim
 
 WORKDIR /app

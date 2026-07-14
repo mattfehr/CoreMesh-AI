@@ -1,7 +1,11 @@
-# [Project 1] Automated Evaluation Gates
-# Full implementation: Phase 4, Step 4.2
-# Triggers on prompt configuration changes; boots Docker services, runs golden_datasets
-# test suite, and fails the build if accuracy drops by more than 3%.
+# Module: placeholder model-regression workflow.
+# Role: reserves the planned CI entry point for evaluating golden datasets
+# when prompts or model behavior change.
+# Dependencies: GitHub Actions; the future implementation will also require
+# the CoreMesh data services and an evaluation runner.
+# Side effects: none today. Empty triggers and jobs keep this workflow inert.
+#
+# Roadmap source: CoreMesh Phase 4.2 / AI Engineering Guide Project 1.
 name: model-regression-ci
 on: {}
 jobs: {}

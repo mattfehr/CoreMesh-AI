@@ -1,4 +1,15 @@
-"""Parallel consensus arbitration for outgoing agent responses."""
+"""Parallel consensus arbitration for outgoing agent responses.
+
+System role:
+    Fail-closed quality gate between synthesized agent text and delivery.
+Dependencies:
+    Pydantic validates provider output, Tenacity retries transient failures, and
+    httpx/OpenAI-compatible clients call OpenAI, Anthropic, and Ollama.
+Side effects:
+    Invoked arbitration sends prompts/responses to configured providers, waits
+    up to a bounded timeout, and may release, remediate, block, or request human
+    review. Importing the module performs no provider call.
+"""
 from __future__ import annotations
 
 import asyncio
@@ -26,6 +37,7 @@ BLOCKED_RESPONSE = (
 
 
 class ConsensusStatus(str, Enum):
+    """Stable terminal delivery states returned to orchestrator callers."""
     PASSED = "passed"
     PASSED_DEGRADED = "passed_degraded"
     REMEDIATED = "remediated"
@@ -118,6 +130,7 @@ class ConsensusVerdict(BaseModel):
         assessments: Sequence[CriticAssessmentSchema],
         failures: Sequence[CriticFailure] | None = None,
     ) -> "ConsensusVerdict":
+        """Build a releasing verdict, marked degraded when a critic failed."""
         return cls(
             payload_id=_payload_id(payload),
             status=ConsensusStatus.PASSED_DEGRADED if failures else ConsensusStatus.PASSED,
@@ -141,6 +154,7 @@ class ConsensusVerdict(BaseModel):
         triggered_by: Sequence[str] | None = None,
         adjudication: AdjudicationSchema | None = None,
     ) -> "ConsensusVerdict":
+        """Build a non-delivery verdict with the safe replacement response."""
         return cls(
             payload_id=_payload_id(payload),
             status=status,
@@ -156,6 +170,7 @@ class ConsensusVerdict(BaseModel):
 
 
 class CriticClient(Protocol):
+    """One provider/dimension evaluator used in the parallel critic fan-out."""
     dimension: EvaluationDimension
     provider_name: str
 
@@ -164,6 +179,7 @@ class CriticClient(Protocol):
 
 
 class AdjudicatorClient(Protocol):
+    """Resolver for low scores, anomalies, disagreement, or critic failure."""
     provider_name: str
 
     async def adjudicate(
@@ -196,6 +212,11 @@ class ConsensusArbitrator:
         self,
         payload: ArbitrationPayload | Mapping[str, Any],
     ) -> ConsensusVerdict:
+        """Run critics concurrently and return the final release decision.
+
+        Timeout or fewer than two successful critics blocks delivery. Any
+        quality trigger requires adjudication; adjudicator failure also blocks.
+        """
         payload = ArbitrationPayload.model_validate(payload)
         timeout_seconds = settings.arbitration_timeout_seconds
         try:
@@ -349,6 +370,7 @@ class ConsensusArbitrator:
 
 
 class OpenAICriticClient:
+    """OpenAI structured-output critic for one evaluation dimension."""
     provider_name = "openai"
 
     def __init__(
@@ -387,6 +409,7 @@ class OpenAICriticClient:
 
 
 class AnthropicCriticClient:
+    """Anthropic JSON critic invoked through its Messages HTTP API."""
     dimension: EvaluationDimension = "logic"
     provider_name = "anthropic"
 
@@ -430,6 +453,7 @@ class AnthropicCriticClient:
 
 
 class OllamaCriticClient:
+    """Local Ollama JSON critic invoked through its chat HTTP API."""
     dimension: EvaluationDimension = "completeness"
     provider_name = "ollama"
 
@@ -463,6 +487,7 @@ class OllamaCriticClient:
 
 
 class OpenAIAdjudicatorClient:
+    """OpenAI structured-output adjudicator for triggered verdicts."""
     provider_name = "openai_adjudicator"
 
     def __init__(

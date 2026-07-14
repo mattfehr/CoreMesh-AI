@@ -1,5 +1,15 @@
 """Hybrid dense/sparse retrieval for CoreMesh Step 1.2.
 
+System role:
+    Produces source-marked evidence for Python callers and the supervisor's RAG
+    specialist by combining semantic and lexical recall.
+Dependencies:
+    Default adapters use OpenAI embeddings, persistent Qdrant vectors,
+    process-local BM25, and a sentence-transformers cross-encoder.
+Side effects:
+    Indexing calls OpenAI and writes Qdrant while retaining a local sparse
+    corpus; searching calls OpenAI/Qdrant and can load/download reranker weights.
+
 The module keeps the production path wired to Qdrant, OpenAI embeddings, and a
 cross-encoder reranker while allowing tests to inject lightweight fakes.
 """
@@ -20,6 +30,7 @@ TOKEN_PATTERN = re.compile(r"[A-Za-z0-9_]+(?:[.\-/:][A-Za-z0-9_]+)*")
 
 
 class TextChunk(BaseModel):
+    """Indexable source fragment with a caller-stable identifier."""
     chunk_id: str
     text: str
     source: str
@@ -27,6 +38,7 @@ class TextChunk(BaseModel):
 
 
 class RetrievalResult(BaseModel):
+    """Ranked evidence plus dense/sparse provenance and citation marker."""
     chunk_id: str
     text: str
     source: str
@@ -41,16 +53,19 @@ class RetrievalResult(BaseModel):
 
 @dataclass(frozen=True)
 class SearchHit:
+    """Internal adapter-neutral chunk and raw index score."""
     chunk: TextChunk
     score: float
 
 
 class EmbeddingProvider(Protocol):
+    """Batch text-to-vector provider contract."""
     def embed(self, texts: Sequence[str]) -> list[list[float]]:
         ...
 
 
 class DenseIndex(Protocol):
+    """Persistent dense-vector indexing and query contract."""
     def index_chunks(self, chunks: Sequence[TextChunk], vectors: Sequence[Sequence[float]]) -> None:
         ...
 
@@ -59,6 +74,7 @@ class DenseIndex(Protocol):
 
 
 class Reranker(Protocol):
+    """Final query/chunk scoring contract."""
     def score(self, query: str, chunks: Sequence[TextChunk]) -> list[float]:
         ...
 
@@ -90,6 +106,7 @@ def tokenize(text: str) -> list[str]:
 
 
 def technical_tokens(text: str) -> set[str]:
+    """Return exact compound/code identifiers eligible for priority ranking."""
     tokens: set[str] = set()
     for token in TOKEN_PATTERN.findall(text):
         if any(sep in token for sep in "._-/:") or re.search(r"[a-z][A-Z]", token):
@@ -98,10 +115,12 @@ def technical_tokens(text: str) -> set[str]:
 
 
 def stable_point_id(chunk_id: str) -> str:
+    """Map a caller chunk ID to a deterministic Qdrant-compatible UUID."""
     return str(uuid.uuid5(uuid.NAMESPACE_URL, f"coremesh:rag:{chunk_id}"))
 
 
 class OpenAIEmbeddingProvider:
+    """Lazy OpenAI embedding adapter; requires a key only when used."""
     def __init__(self, model: str | None = None, api_key: str | None = None) -> None:
         self.model = model or settings.openai_embedding_model
         self.api_key = api_key if api_key is not None else settings.openai_api_key
@@ -118,6 +137,7 @@ class OpenAIEmbeddingProvider:
         return self._client
 
     def embed(self, texts: Sequence[str]) -> list[list[float]]:
+        """Embed texts in one provider request, preserving input order."""
         if not texts:
             return []
         response = self.client.embeddings.create(model=self.model, input=list(texts))
@@ -125,6 +145,7 @@ class OpenAIEmbeddingProvider:
 
 
 class QdrantDenseIndex:
+    """Lazy Qdrant collection adapter for persistent dense chunks."""
     def __init__(
         self,
         collection_name: str | None = None,
@@ -145,6 +166,7 @@ class QdrantDenseIndex:
         return self._client
 
     def ensure_collection(self) -> None:
+        """Create the configured cosine collection when it does not exist."""
         from qdrant_client import models  # noqa: PLC0415
 
         if self.client.collection_exists(self.collection_name):
@@ -158,6 +180,7 @@ class QdrantDenseIndex:
         )
 
     def index_chunks(self, chunks: Sequence[TextChunk], vectors: Sequence[Sequence[float]]) -> None:
+        """Upsert aligned chunks/vectors under deterministic point IDs."""
         if len(chunks) != len(vectors):
             raise ValueError("chunks and vectors must have the same length.")
         if not chunks:
@@ -186,6 +209,7 @@ class QdrantDenseIndex:
         )
 
     def search(self, query_vector: Sequence[float], limit: int) -> list[SearchHit]:
+        """Query nearest persistent points and normalize their payloads."""
         response = self.client.query_points(
             collection_name=self.collection_name,
             query=list(query_vector),
@@ -197,12 +221,14 @@ class QdrantDenseIndex:
 
 
 class BM25SparseIndex:
+    """Process-local lexical index, with a small fallback implementation."""
     def __init__(self) -> None:
         self._chunks: list[TextChunk] = []
         self._tokenized: list[list[str]] = []
         self._bm25: Any | None = None
 
     def index_chunks(self, chunks: Sequence[TextChunk]) -> None:
+        """Replace the complete in-memory corpus with the supplied chunks."""
         self._chunks = list(chunks)
         self._tokenized = [tokenize(chunk.text) for chunk in self._chunks]
 
@@ -214,6 +240,7 @@ class BM25SparseIndex:
             self._bm25 = BM25Okapi(self._tokenized)
 
     def search(self, query: str, limit: int) -> list[SearchHit]:
+        """Return positive-score lexical hits with deterministic tie ordering."""
         if not self._chunks or self._bm25 is None:
             return []
 
@@ -232,6 +259,7 @@ class BM25SparseIndex:
 
 
 class CrossEncoderReranker:
+    """Lazy sentence-transformers cross-encoder scoring adapter."""
     def __init__(self, model_name: str | None = None) -> None:
         self.model_name = model_name or settings.reranker_model
         self._model: Any | None = None
@@ -252,6 +280,7 @@ class CrossEncoderReranker:
 
 
 class HybridRetriever:
+    """Facade for dense/sparse indexing, RRF fusion, and final reranking."""
     def __init__(
         self,
         embedding_provider: EmbeddingProvider | None = None,
@@ -288,12 +317,14 @@ class HybridRetriever:
         )
 
     def index_chunks(self, chunks: Sequence[TextChunk]) -> None:
+        """Embed once, persist dense points, and replace the sparse corpus."""
         chunk_list = list(chunks)
         embeddings = self.embedding_provider.embed([chunk.text for chunk in chunk_list])
         self.dense_index.index_chunks(chunk_list, embeddings)
         self.sparse_index.index_chunks(chunk_list)
 
     def search(self, query: str, top_k: int = 5) -> list[RetrievalResult]:
+        """Return top evidence after weighted RRF and cross-encoder reranking."""
         if top_k <= 0:
             return []
 

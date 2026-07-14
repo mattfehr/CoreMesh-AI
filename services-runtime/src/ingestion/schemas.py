@@ -1,3 +1,16 @@
+"""Wire contracts for document ingestion and invoice validation.
+
+System role:
+    Defines the stable typed boundary shared by extraction, validation,
+    processing, FastAPI response serialization, agents, and callers.
+Dependencies:
+    Pydantic validates and serializes these models; field descriptions also
+    feed the generated OpenAPI schema and Instructor structured output.
+Side effects:
+    Model validation can raise validation errors; importing this module has no
+    I/O, network, logging, or persistence side effects.
+"""
+
 from typing import Any, Dict, List
 
 from pydantic import BaseModel, Field
@@ -8,6 +21,7 @@ from pydantic import BaseModel, Field
 # Defined verbatim in plan/coremesh.txt — Data Contracts section.
 # ---------------------------------------------------------------------------
 class ExtractionTargetSchema(BaseModel):
+    """Normalized invoice fields emitted by either extraction strategy."""
     vendor_name: str = Field(description="Normalized corporate legal entity name.")
     invoice_id: str = Field(description="Unique identity token extracted from document metadata header.")
     line_items: List[Dict[str, Any]] = Field(description="Array listing units, description parameters, totals.")
@@ -16,6 +30,7 @@ class ExtractionTargetSchema(BaseModel):
 
 
 class ValidationResult(BaseModel):
+    """Arithmetic consistency result for one extracted invoice."""
     passed: bool
     computed_sum: float = Field(description="Sum of all line item totals plus calculated_tax.")
     delta: float = Field(description="Absolute difference between computed_sum and invoice_total.")
@@ -23,6 +38,7 @@ class ValidationResult(BaseModel):
 
 
 class IngestResponse(BaseModel):
+    """Complete public response including data, provenance, and timing."""
     extraction: ExtractionTargetSchema
     ocr_engine_used: str = Field(
         description="Primary text source: 'tesseract', 'easyocr', or 'vision_llm'."
