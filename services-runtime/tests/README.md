@@ -9,6 +9,7 @@ FastAPI:
 | <code>test_sql_sandbox.py</code> | Statement/function blocking, limits, schema introspection, execution, and rollback. |
 | <code>test_orchestrator.py</code> | Planning, specialist order, memory, partial failure, synthesis, and arbitration integration. |
 | <code>test_consensus.py</code> | Quorum, retries, timeout, adjudication, remediation, and fail-closed verdicts. |
+| <code>test_forensics.py</code> | OpenTelemetry trees, redaction, SQLite indexing, backward diagnosis, feedback, and deliberate sub-agent failure visualization. |
 
 Run from <code>services-runtime</code>:
 

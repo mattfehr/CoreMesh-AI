@@ -56,6 +56,14 @@ class Settings(BaseSettings):
     chroma_collection: str = "coremesh_agent_memory"
     agent_memory_ttl_seconds: int = 3600
 
+    # Failure-forensics tracing
+    forensics_enabled: bool = True
+    forensics_trace_directory: str = ".traces"
+    forensics_registry_path: str = ".traces/registry.sqlite3"
+    forensics_confidence_threshold: float = 0.60
+    forensics_confidence_drop_threshold: float = 0.20
+    forensics_max_attribute_length: int = 256
+
     # Hybrid retrieval (RRF + reranker) tuning
     rag_dense_weight: float = 1.0
     rag_sparse_weight: float = 1.0

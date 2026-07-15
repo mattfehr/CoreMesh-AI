@@ -12,7 +12,7 @@ feature libraries:
 | [sql_engine](sql_engine/README.md) | Python API only. |
 | [agents](agents/README.md) | Python API only. |
 | [arbitration](arbitration/README.md) | Python API used by agents; no route. |
-| [tracing](tracing/README.md) | Placeholder only. |
+| [tracing](tracing/README.md) | OpenTelemetry execution trees, local registry, and root-cause analysis. |
 
 Keep HTTP validation and error normalization in <code>main.py</code>, domain
 work in its package, and external clients lazy so liveness and unrelated

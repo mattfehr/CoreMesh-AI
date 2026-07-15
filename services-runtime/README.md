@@ -26,7 +26,7 @@ synchronous OCR work to a worker thread, and maps processing failures to 422.
 | [src/sql_engine](src/sql_engine/README.md) | Library-only read-only SQL boundary. |
 | [src/agents](src/agents/README.md) | Library-only supervisor, specialists, and memory. |
 | [src/arbitration](src/arbitration/README.md) | Library-only multi-provider delivery gate. |
-| [src/tracing](src/tracing/README.md) | Placeholder; no forensics implementation. |
+| [src/tracing](src/tracing/README.md) | OpenTelemetry trees, JSON/SQLite registry, and backward failure analysis. |
 | [scripts](scripts/README.md) | In-process ingestion verification. |
 | [tests](tests/README.md) | Isolated unit/contract tests for library subsystems. |
 | [fixtures](fixtures/README.md) | Generated synthetic invoice test asset. |
@@ -64,6 +64,7 @@ image automatically.
 | Infrastructure | PostgreSQL DSN for SQL, Redis URL for agent working memory, and Qdrant URL/collection/vector size for RAG. |
 | Agent memory | Chroma directory/collection and Redis TTL. |
 | Retrieval | Dense/sparse RRF weights, cross-encoder model, and exact technical-token priority. |
+| Forensics | Enable flag, JSON/SQLite paths, confidence/drop thresholds, redacted attribute limit, and optional standard OTLP endpoint. |
 
 Defaults target the root Compose stack. They are development defaults, not
 production credentials or authorization boundaries.

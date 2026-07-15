@@ -32,6 +32,10 @@ from src.agents.orchestrator import (  # noqa: E402
     _apply_arbitration,
     run_orchestration,
 )
+from src.tracing.forensics import ForensicsTracer  # noqa: E402
+
+
+DISABLED_FORENSICS = ForensicsTracer(enabled=False)
 
 
 def _clean_assessments():
@@ -170,6 +174,7 @@ def test_supervisor_splits_and_coordinates_multi_hop_document_and_db_workflow():
         short_term_memory=short_term_memory,
         semantic_memory=semantic_memory,
         arbitrator=arbitrator,
+        forensics=DISABLED_FORENSICS,
     )
     request = ExecutionRequestPayload(
         user_id="user-123",
@@ -236,6 +241,7 @@ def test_orchestration_accepts_binary_document_bytes_in_session_context():
         short_term_memory=InMemoryShortTermMemory(),
         semantic_memory=InMemorySemanticMemory(),
         arbitrator=arbitrator,
+        forensics=DISABLED_FORENSICS,
     )
     raw_document = b"\x89PNG\r\n\x1a\n\xff\xfe invoice-bytes"
     request = ExecutionRequestPayload(
@@ -268,6 +274,7 @@ def test_orchestration_blocks_final_response_when_arbitration_flags_logical_erro
         short_term_memory=InMemoryShortTermMemory(),
         semantic_memory=InMemorySemanticMemory(),
         arbitrator=arbitrator,
+        forensics=DISABLED_FORENSICS,
     )
     request = ExecutionRequestPayload(
         user_id="user-logical-error",
@@ -308,6 +315,7 @@ def test_orchestration_blocks_empty_final_response_without_crashing():
         short_term_memory=InMemoryShortTermMemory(),
         semantic_memory=InMemorySemanticMemory(),
         arbitrator=PassingArbitrator(),
+        forensics=DISABLED_FORENSICS,
     )
 
     result = _apply_arbitration(dependencies, empty_result, request)

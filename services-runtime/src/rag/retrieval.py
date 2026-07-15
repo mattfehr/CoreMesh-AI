@@ -25,6 +25,7 @@ from typing import Any, Iterable, Protocol, Sequence
 from pydantic import BaseModel, Field
 
 from src.config import settings
+from src.tracing.forensics import SpanCategory, forensic_span
 
 TOKEN_PATTERN = re.compile(r"[A-Za-z0-9_]+(?:[.\-/:][A-Za-z0-9_]+)*")
 
@@ -136,6 +137,7 @@ class OpenAIEmbeddingProvider:
             self._client = OpenAI(api_key=self.api_key)
         return self._client
 
+    @forensic_span("coremesh.model.openai.embedding", SpanCategory.MODEL)
     def embed(self, texts: Sequence[str]) -> list[list[float]]:
         """Embed texts in one provider request, preserving input order."""
         if not texts:
@@ -165,6 +167,7 @@ class QdrantDenseIndex:
             self._client = QdrantClient(url=self.url)
         return self._client
 
+    @forensic_span("coremesh.db.qdrant.ensure_collection", SpanCategory.DATABASE)
     def ensure_collection(self) -> None:
         """Create the configured cosine collection when it does not exist."""
         from qdrant_client import models  # noqa: PLC0415
@@ -179,6 +182,7 @@ class QdrantDenseIndex:
             ),
         )
 
+    @forensic_span("coremesh.db.qdrant.upsert", SpanCategory.DATABASE)
     def index_chunks(self, chunks: Sequence[TextChunk], vectors: Sequence[Sequence[float]]) -> None:
         """Upsert aligned chunks/vectors under deterministic point IDs."""
         if len(chunks) != len(vectors):
@@ -208,6 +212,7 @@ class QdrantDenseIndex:
             wait=True,
         )
 
+    @forensic_span("coremesh.db.qdrant.query", SpanCategory.DATABASE)
     def search(self, query_vector: Sequence[float], limit: int) -> list[SearchHit]:
         """Query nearest persistent points and normalize their payloads."""
         response = self.client.query_points(
@@ -239,6 +244,7 @@ class BM25SparseIndex:
         else:
             self._bm25 = BM25Okapi(self._tokenized)
 
+    @forensic_span("coremesh.tool.bm25.search", SpanCategory.TOOL)
     def search(self, query: str, limit: int) -> list[SearchHit]:
         """Return positive-score lexical hits with deterministic tie ordering."""
         if not self._chunks or self._bm25 is None:
@@ -272,6 +278,7 @@ class CrossEncoderReranker:
             self._model = CrossEncoder(self.model_name)
         return self._model
 
+    @forensic_span("coremesh.model.cross_encoder.rerank", SpanCategory.MODEL)
     def score(self, query: str, chunks: Sequence[TextChunk]) -> list[float]:
         if not chunks:
             return []
@@ -316,6 +323,7 @@ class HybridRetriever:
             else settings.rag_keyword_priority
         )
 
+    @forensic_span("coremesh.tool.rag.index", SpanCategory.TOOL)
     def index_chunks(self, chunks: Sequence[TextChunk]) -> None:
         """Embed once, persist dense points, and replace the sparse corpus."""
         chunk_list = list(chunks)
@@ -323,6 +331,7 @@ class HybridRetriever:
         self.dense_index.index_chunks(chunk_list, embeddings)
         self.sparse_index.index_chunks(chunk_list)
 
+    @forensic_span("coremesh.tool.rag.search", SpanCategory.TOOL)
     def search(self, query: str, top_k: int = 5) -> list[RetrievalResult]:
         """Return top evidence after weighted RRF and cross-encoder reranking."""
         if top_k <= 0:

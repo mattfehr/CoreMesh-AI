@@ -24,6 +24,7 @@ from PIL import Image
 from pydantic import BaseModel, Field
 
 from src.config import settings
+from src.tracing.forensics import SpanCategory, forensic_span
 
 log = logging.getLogger(__name__)
 
@@ -38,6 +39,7 @@ class _ExtractedPageText(BaseModel):
     )
 
 
+@forensic_span("coremesh.model.openai.vision_ocr", SpanCategory.MODEL)
 def extract_text_via_vision(page_image: np.ndarray) -> str:
     """Send *page_image* to the GPT-4o vision model and return raw extracted text.
 

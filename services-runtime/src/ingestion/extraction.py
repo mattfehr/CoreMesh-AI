@@ -22,6 +22,7 @@ from typing import Any, Dict, List, Tuple
 
 from src.config import settings
 from src.ingestion.schemas import ExtractionTargetSchema
+from src.tracing.forensics import SpanCategory, forensic_span
 
 log = logging.getLogger(__name__)
 
@@ -42,6 +43,7 @@ _USER_TEMPLATE = (
 # LLM extraction (instructor path)
 # ---------------------------------------------------------------------------
 
+@forensic_span("coremesh.model.openai.document_extraction", SpanCategory.MODEL)
 def extract_with_llm(text: str) -> ExtractionTargetSchema:
     """Extract a schema-validated invoice with the configured OpenAI model.
 

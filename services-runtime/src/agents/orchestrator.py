@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import contextvars
 import hashlib
 import inspect
 import json
@@ -41,6 +42,14 @@ from src.arbitration.consensus import (
     CriticFailure,
 )
 from src.config import settings
+from src.tracing.forensics import (
+    FailureTrigger,
+    ForensicsTracer,
+    RootCauseDiagnosis,
+    SpanCategory,
+    content_metadata,
+    get_forensics,
+)
 
 log = logging.getLogger(__name__)
 
@@ -109,6 +118,8 @@ class OrchestrationResult(BaseModel):
     retrieved_memories: list[dict[str, Any]] = Field(default_factory=list)
     final_response: str
     arbitration: ConsensusVerdict | None = None
+    trace_id: str | None = None
+    root_cause: RootCauseDiagnosis | None = None
 
 
 class _GraphState(TypedDict, total=False):
@@ -361,25 +372,40 @@ class RedisShortTermMemory:
         return self._client
 
     def save_state(self, session_id: str, state: Mapping[str, Any]) -> None:
-        payload = json.dumps(_json_ready(state), sort_keys=True)
-        key = self._state_key(session_id)
-        if self.ttl_seconds > 0:
-            self.client.setex(key, self.ttl_seconds, payload)
-        else:
-            self.client.set(key, payload)
+        with get_forensics().span(
+            "coremesh.db.redis.save_state",
+            SpanCategory.DATABASE,
+            attributes={"db.system": "redis", "db.operation.name": "SET"},
+        ):
+            payload = json.dumps(_json_ready(state), sort_keys=True)
+            key = self._state_key(session_id)
+            if self.ttl_seconds > 0:
+                self.client.setex(key, self.ttl_seconds, payload)
+            else:
+                self.client.set(key, payload)
 
     def append_event(self, session_id: str, event: Mapping[str, Any]) -> None:
-        payload = json.dumps(_json_ready(event), sort_keys=True)
-        key = self._event_key(session_id)
-        self.client.rpush(key, payload)
-        if self.ttl_seconds > 0:
-            self.client.expire(key, self.ttl_seconds)
+        with get_forensics().span(
+            "coremesh.db.redis.append_event",
+            SpanCategory.DATABASE,
+            attributes={"db.system": "redis", "db.operation.name": "RPUSH"},
+        ):
+            payload = json.dumps(_json_ready(event), sort_keys=True)
+            key = self._event_key(session_id)
+            self.client.rpush(key, payload)
+            if self.ttl_seconds > 0:
+                self.client.expire(key, self.ttl_seconds)
 
     def load_state(self, session_id: str) -> dict[str, Any] | None:
-        payload = self.client.get(self._state_key(session_id))
-        if payload is None:
-            return None
-        return json.loads(payload)
+        with get_forensics().span(
+            "coremesh.db.redis.load_state",
+            SpanCategory.DATABASE,
+            attributes={"db.system": "redis", "db.operation.name": "GET"},
+        ):
+            payload = self.client.get(self._state_key(session_id))
+            if payload is None:
+                return None
+            return json.loads(payload)
 
     @staticmethod
     def _state_key(session_id: str) -> str:
@@ -421,11 +447,20 @@ class ChromaSemanticMemory:
         *,
         limit: int = 3,
     ) -> list[dict[str, Any]]:
-        response = self.collection.query(
-            query_texts=[query],
-            n_results=limit,
-            where={"user_id": user_id},
-        )
+        with get_forensics().span(
+            "coremesh.db.chroma.query",
+            SpanCategory.DATABASE,
+            attributes={
+                "db.system": "chroma",
+                "db.operation.name": "query",
+                "coremesh.result.limit": limit,
+            },
+        ):
+            response = self.collection.query(
+                query_texts=[query],
+                n_results=limit,
+                where={"user_id": user_id},
+            )
         documents = (response.get("documents") or [[]])[0]
         metadatas = (response.get("metadatas") or [[]])[0]
         distances = (response.get("distances") or [[]])[0]
@@ -449,11 +484,16 @@ class ChromaSemanticMemory:
             "created_at_ms": int(time.time() * 1_000),
         }
         memory_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"coremesh:agents:{result.session_id}"))
-        self.collection.upsert(
-            ids=[memory_id],
-            documents=[summary],
-            metadatas=[metadata],
-        )
+        with get_forensics().span(
+            "coremesh.db.chroma.upsert",
+            SpanCategory.DATABASE,
+            attributes={"db.system": "chroma", "db.operation.name": "upsert"},
+        ):
+            self.collection.upsert(
+                ids=[memory_id],
+                documents=[summary],
+                metadatas=[metadata],
+            )
 
 
 class InMemoryShortTermMemory:
@@ -499,6 +539,7 @@ class OrchestratorDependencies:
     short_term_memory: ShortTermMemory = field(default_factory=RedisShortTermMemory)
     semantic_memory: SemanticMemory = field(default_factory=ChromaSemanticMemory)
     arbitrator: ResponseArbitrator = field(default_factory=ConsensusArbitrator)
+    forensics: ForensicsTracer = field(default_factory=get_forensics)
 
 
 def build_supervisor_graph(dependencies: OrchestratorDependencies | None = None) -> Any:
@@ -555,86 +596,178 @@ def run_orchestration(
     if normalized_context is not payload.session_context:
         payload = payload.model_copy(update={"session_context": normalized_context})
     session_id = _session_id(payload)
-    initial_state = SupervisorState(request=payload, session_id=session_id)
-    graph = build_supervisor_graph(deps)
-    final_state = graph.invoke(_state_to_graph_dict(initial_state))
-    state = SupervisorState.model_validate(final_state)
-    result = OrchestrationResult(
-        session_id=state.session_id,
-        user_id=state.request.user_id,
-        feature_scope=state.request.feature_scope,
-        status=state.status,
-        plan=state.plan,
-        observations=state.observations,
-        retrieved_memories=state.retrieved_memories,
-        final_response=state.final_response or "",
-    )
-    result = _apply_arbitration(deps, result, payload)
-    _store_long_term(deps, result)
+    trace_attributes = {
+        "coremesh.feature_scope": payload.feature_scope,
+        **content_metadata("coremesh.session.id", session_id),
+        **content_metadata("coremesh.request.query", payload.payload_query),
+        **content_metadata("coremesh.request.user_id", payload.user_id),
+    }
+    with deps.forensics.execution(
+        "coremesh.agent.workflow",
+        attributes=trace_attributes,
+    ) as execution:
+        initial_state = SupervisorState(request=payload, session_id=session_id)
+        graph = build_supervisor_graph(deps)
+        final_state = graph.invoke(_state_to_graph_dict(initial_state))
+        state = SupervisorState.model_validate(final_state)
+        result = OrchestrationResult(
+            session_id=state.session_id,
+            user_id=state.request.user_id,
+            feature_scope=state.request.feature_scope,
+            status=state.status,
+            plan=state.plan,
+            observations=state.observations,
+            retrieved_memories=state.retrieved_memories,
+            final_response=state.final_response or "",
+            trace_id=execution.trace_id,
+        )
+        with deps.forensics.span(
+            "coremesh.tool.arbitration",
+            SpanCategory.TOOL,
+            attributes={"coremesh.step.index": len(result.plan)},
+        ) as arbitration_span:
+            result = _apply_arbitration(deps, result, payload)
+            _record_arbitration_quality(arbitration_span, result.arbitration)
+        _store_long_term(deps, result)
+
+        execution_errors = [
+            observation.error or observation.specialist.value
+            for observation in result.observations
+            if observation.status == "error"
+        ]
+        arbitration_reasons = (
+            list(result.arbitration.triggered_by) if result.arbitration is not None else []
+        )
+        if execution_errors:
+            trigger = FailureTrigger.EXECUTION_ERROR
+            reasons = [
+                f"{observation.specialist.value}_failed"
+                for observation in result.observations
+                if observation.status == "error"
+            ]
+        elif arbitration_reasons or (
+            result.arbitration is not None
+            and result.arbitration.status != ConsensusStatus.PASSED
+        ):
+            trigger = FailureTrigger.ARBITRATION_FAILURE
+            reasons = arbitration_reasons or [result.arbitration.status.value]
+        else:
+            trigger = None
+            reasons = []
+        execution.set_outcome(
+            status=result.status,
+            trigger=trigger,
+            reasons=reasons,
+            final_confidence=(
+                result.arbitration.confidence_coefficient
+                if result.arbitration is not None
+                else None
+            ),
+        )
+
+    if execution.diagnosis is not None:
+        result = result.model_copy(update={"root_cause": execution.diagnosis})
     return result
 
 
 def _build_nodes(deps: OrchestratorDependencies) -> dict[str, Any]:
     def supervisor_node(graph_state: Mapping[str, Any]) -> dict[str, Any]:
         state = SupervisorState.model_validate(graph_state)
+        with deps.forensics.span(
+            "coremesh.agent.node.supervisor",
+            SpanCategory.AGENT,
+            attributes={
+                "coremesh.agent.name": "supervisor",
+                "coremesh.step.index": state.current_step_index,
+            },
+        ) as node_span:
+            if not state.plan:
+                state.retrieved_memories = _retrieve_memories(deps, state.request)
+                state.plan = _create_plan(state.request, state.retrieved_memories)
+                state.status = "running"
 
-        if not state.plan:
-            state.retrieved_memories = _retrieve_memories(deps, state.request)
-            state.plan = _create_plan(state.request, state.retrieved_memories)
-            state.status = "running"
+            if state.current_step_index >= len(state.plan):
+                state.dispatch_next = None
+                state.final_response = _synthesize_response(state)
+                state.status = _completion_status(state.observations)
+                node_span.set_attribute("coremesh.execution.status", state.status)
+                _persist_short_term(deps, state, event_type="workflow_completed")
+                return _state_to_graph_dict(state)
 
-        if state.current_step_index >= len(state.plan):
-            state.dispatch_next = None
-            state.final_response = _synthesize_response(state)
-            state.status = _completion_status(state.observations)
-            _persist_short_term(deps, state, event_type="workflow_completed")
+            current = state.plan[state.current_step_index]
+            node_span.set_attribute("coremesh.step.id", current.step_id)
+            node_span.set_attribute("coremesh.agent.specialist", current.specialist.value)
+            if current.status == "pending":
+                state.plan[state.current_step_index] = current.model_copy(
+                    update={"status": "running"}
+                )
+            state.dispatch_next = state.plan[state.current_step_index].specialist
+            _persist_short_term(deps, state, event_type="workflow_dispatched")
             return _state_to_graph_dict(state)
-
-        current = state.plan[state.current_step_index]
-        if current.status == "pending":
-            state.plan[state.current_step_index] = current.model_copy(update={"status": "running"})
-        state.dispatch_next = state.plan[state.current_step_index].specialist
-        _persist_short_term(deps, state, event_type="workflow_dispatched")
-        return _state_to_graph_dict(state)
 
     def specialist_node(specialist: SpecialistName, tool: SpecialistTool) -> Any:
         def node(graph_state: Mapping[str, Any]) -> dict[str, Any]:
             state = SupervisorState.model_validate(graph_state)
             step = state.plan[state.current_step_index]
-            started = time.perf_counter()
-            input_payload = {
-                "query": state.request.payload_query,
-                "step": _json_ready(step),
-                "prior_observation_count": len(state.observations),
+            span_attributes = {
+                "coremesh.agent.specialist": specialist.value,
+                "coremesh.step.id": step.step_id,
+                "coremesh.step.index": state.current_step_index,
+                "coremesh.step.depends_on": step.depends_on,
             }
+            with deps.forensics.span(
+                f"coremesh.agent.node.{specialist.value}",
+                SpanCategory.AGENT,
+                attributes=span_attributes,
+            ) as node_span:
+                started = time.perf_counter()
+                input_payload = {
+                    "query": state.request.payload_query,
+                    "step": _json_ready(step),
+                    "prior_observation_count": len(state.observations),
+                }
 
-            try:
-                output = tool.run(state.request, step, state.observations)
-                status = "success"
-                error = None
-            except Exception as exc:  # pragma: no cover - exercised by integration failures
-                log.exception("agent specialist failed", extra={"specialist": specialist.value})
-                output = {}
-                status = "error"
-                error = str(exc)
+                try:
+                    with deps.forensics.span(
+                        f"coremesh.tool.{specialist.value}",
+                        SpanCategory.TOOL,
+                        attributes=span_attributes,
+                    ) as tool_span:
+                        output = tool.run(state.request, step, state.observations)
+                        _record_tool_quality(tool_span, specialist, output)
+                    status = "success"
+                    error = None
+                except Exception as exc:  # pragma: no cover - integration path
+                    log.exception(
+                        "agent specialist failed",
+                        extra={"specialist": specialist.value},
+                    )
+                    deps.forensics.mark_error(node_span, exc)
+                    output = {}
+                    status = "error"
+                    error = str(exc)
 
-            observation = ToolObservation(
-                step_id=step.step_id,
-                specialist=specialist,
-                status=status,
-                input_payload=input_payload,
-                output=_normalize_tool_output(output),
-                error=error,
-                latency_ms=round((time.perf_counter() - started) * 1_000, 2),
-            )
-            state.observations.append(observation)
-            state.plan[state.current_step_index] = step.model_copy(
-                update={"status": "completed" if status == "success" else "failed"}
-            )
-            state.current_step_index += 1
-            state.dispatch_next = None
-            _persist_short_term(deps, state, event_type=f"{specialist.value}_completed")
-            return _state_to_graph_dict(state)
+                observation = ToolObservation(
+                    step_id=step.step_id,
+                    specialist=specialist,
+                    status=status,
+                    input_payload=input_payload,
+                    output=_normalize_tool_output(output),
+                    error=error,
+                    latency_ms=round((time.perf_counter() - started) * 1_000, 2),
+                )
+                state.observations.append(observation)
+                state.plan[state.current_step_index] = step.model_copy(
+                    update={"status": "completed" if status == "success" else "failed"}
+                )
+                state.current_step_index += 1
+                state.dispatch_next = None
+                _persist_short_term(
+                    deps,
+                    state,
+                    event_type=f"{specialist.value}_completed",
+                )
+                return _state_to_graph_dict(state)
 
         return node
 
@@ -769,11 +902,16 @@ def _retrieve_memories(
     request: ExecutionRequestPayload,
 ) -> list[dict[str, Any]]:
     try:
-        return deps.semantic_memory.retrieve_similar(
-            request.user_id,
-            request.payload_query,
-            limit=3,
-        )
+        with deps.forensics.span(
+            "coremesh.db.semantic_memory.lookup",
+            SpanCategory.DATABASE,
+            attributes={"db.system": "semantic_memory", "db.operation.name": "query"},
+        ):
+            return deps.semantic_memory.retrieve_similar(
+                request.user_id,
+                request.payload_query,
+                limit=3,
+            )
     except Exception as exc:  # pragma: no cover - protects production path
         log.warning("semantic memory retrieval failed: %s", exc)
         return []
@@ -795,8 +933,18 @@ def _persist_short_term(
         "created_at_ms": int(time.time() * 1_000),
     }
     try:
-        deps.short_term_memory.save_state(state.session_id, snapshot)
-        deps.short_term_memory.append_event(state.session_id, event)
+        with deps.forensics.span(
+            "coremesh.db.short_term_memory.save_state",
+            SpanCategory.DATABASE,
+            attributes={"db.system": "short_term_memory", "db.operation.name": "save"},
+        ):
+            deps.short_term_memory.save_state(state.session_id, snapshot)
+        with deps.forensics.span(
+            "coremesh.db.short_term_memory.append_event",
+            SpanCategory.DATABASE,
+            attributes={"db.system": "short_term_memory", "db.operation.name": "append"},
+        ):
+            deps.short_term_memory.append_event(state.session_id, event)
     except Exception as exc:  # pragma: no cover - protects production path
         log.warning("short-term memory persistence failed: %s", exc)
 
@@ -894,7 +1042,8 @@ def _await_sync(awaitable: Any) -> Any:
         except BaseException as exc:  # pragma: no cover - defensive bridge
             box["error"] = exc
 
-    thread = threading.Thread(target=runner, daemon=True)
+    copied_context = contextvars.copy_context()
+    thread = threading.Thread(target=lambda: copied_context.run(runner), daemon=True)
     thread.start()
     thread.join()
     if "error" in box:
@@ -904,7 +1053,12 @@ def _await_sync(awaitable: Any) -> Any:
 
 def _store_long_term(deps: OrchestratorDependencies, result: OrchestrationResult) -> None:
     try:
-        deps.semantic_memory.store_interaction(result)
+        with deps.forensics.span(
+            "coremesh.db.semantic_memory.store",
+            SpanCategory.DATABASE,
+            attributes={"db.system": "semantic_memory", "db.operation.name": "upsert"},
+        ):
+            deps.semantic_memory.store_interaction(result)
     except Exception as exc:  # pragma: no cover - protects production path
         log.warning("long-term semantic memory persistence failed: %s", exc)
 
@@ -1025,6 +1179,59 @@ def _semantic_summary(result: OrchestrationResult) -> str:
         f"Workflow status: {result.status}. "
         f"Tool sequence: {tool_sequence}."
     )
+
+
+def _record_tool_quality(span: Any, specialist: SpecialistName, output: Any) -> None:
+    """Attach only numeric/categorical tool result metadata to the active span."""
+
+    normalized = _normalize_tool_output(output)
+    if specialist == SpecialistName.RAG_SEARCH:
+        results = normalized.get("results") or []
+        span.set_attribute("coremesh.result.count", len(results))
+        return
+
+    if specialist == SpecialistName.SQL_GENERATION:
+        span.set_attribute("coremesh.result.row_count", int(normalized.get("row_count") or 0))
+        span.set_attribute(
+            "coremesh.sql.limit_applied",
+            bool(normalized.get("limit_applied", False)),
+        )
+        return
+
+    validation = normalized.get("validation") or {}
+    if isinstance(validation, Mapping):
+        passed = validation.get("passed")
+        if isinstance(passed, bool):
+            span.set_attribute("coremesh.quality.validation_passed", passed)
+            span.set_attribute("coremesh.degraded", not passed)
+        for source, target in (
+            ("delta", "coremesh.quality.validation_delta"),
+            ("tolerance", "coremesh.quality.validation_tolerance"),
+        ):
+            value = validation.get(source)
+            if isinstance(value, int | float):
+                span.set_attribute(target, float(value))
+    variance = normalized.get("ocr_variance")
+    if isinstance(variance, int | float):
+        span.set_attribute("coremesh.quality.ocr_variance", float(variance))
+        span.set_attribute("coremesh.quality.ocr_threshold", settings.ocr_variance_threshold)
+        span.set_attribute(
+            "coremesh.quality.vision_recovered",
+            bool(normalized.get("vision_fallback_used", False)),
+        )
+
+
+def _record_arbitration_quality(span: Any, verdict: ConsensusVerdict | None) -> None:
+    if verdict is None:
+        span.set_attribute("coremesh.arbitration.failed", True)
+        span.set_attribute("coremesh.degraded", True)
+        return
+    span.set_attribute("coremesh.arbitration.status", verdict.status.value)
+    span.set_attribute("coremesh.quality.confidence", verdict.confidence_coefficient)
+    span.set_attribute("coremesh.arbitration.trigger_count", len(verdict.triggered_by))
+    failed = bool(verdict.triggered_by) or verdict.status != ConsensusStatus.PASSED
+    span.set_attribute("coremesh.arbitration.failed", failed)
+    span.set_attribute("coremesh.degraded", failed)
 
 
 def _hash_embedding(text: str, dimensions: int = 64) -> list[float]:

@@ -25,6 +25,7 @@ from pydantic import BaseModel, Field, field_validator
 from tenacity import AsyncRetrying, retry_if_exception, stop_after_attempt, wait_exponential
 
 from src.config import settings
+from src.tracing.forensics import SpanCategory, forensic_span
 
 
 EvaluationDimension = Literal["factual", "logic", "completeness"]
@@ -208,6 +209,7 @@ class ConsensusArbitrator:
         self.score_threshold = score_threshold or settings.arbitration_score_threshold
         self.retry_attempts = retry_attempts or settings.arbitration_retry_attempts
 
+    @forensic_span("coremesh.tool.consensus_arbitration", SpanCategory.TOOL)
     async def arbitrate(
         self,
         payload: ArbitrationPayload | Mapping[str, Any],
@@ -386,6 +388,7 @@ class OpenAICriticClient:
         self.api_key = api_key if api_key is not None else settings.openai_api_key
         self.timeout_seconds = timeout_seconds or settings.arbitration_timeout_seconds
 
+    @forensic_span("coremesh.model.openai.critic", SpanCategory.MODEL)
     async def assess(self, payload: ArbitrationPayload) -> CriticAssessmentSchema:
         return await asyncio.to_thread(self._assess_sync, payload)
 
@@ -424,6 +427,7 @@ class AnthropicCriticClient:
         self.api_key = api_key if api_key is not None else settings.anthropic_api_key
         self.timeout_seconds = timeout_seconds or settings.arbitration_timeout_seconds
 
+    @forensic_span("coremesh.model.anthropic.critic", SpanCategory.MODEL)
     async def assess(self, payload: ArbitrationPayload) -> CriticAssessmentSchema:
         if not self.api_key:
             raise RuntimeError("ANTHROPIC_API_KEY is not configured")
@@ -468,6 +472,7 @@ class OllamaCriticClient:
         self.base_url = (base_url or settings.ollama_base_url).rstrip("/")
         self.timeout_seconds = timeout_seconds or settings.arbitration_timeout_seconds
 
+    @forensic_span("coremesh.model.ollama.critic", SpanCategory.MODEL)
     async def assess(self, payload: ArbitrationPayload) -> CriticAssessmentSchema:
         messages = _critic_messages(payload, self.dimension)
         async with httpx.AsyncClient(timeout=self.timeout_seconds) as client:
@@ -501,6 +506,7 @@ class OpenAIAdjudicatorClient:
         self.api_key = api_key if api_key is not None else settings.openai_api_key
         self.timeout_seconds = timeout_seconds or settings.arbitration_timeout_seconds
 
+    @forensic_span("coremesh.model.openai.adjudicator", SpanCategory.MODEL)
     async def adjudicate(
         self,
         payload: ArbitrationPayload,

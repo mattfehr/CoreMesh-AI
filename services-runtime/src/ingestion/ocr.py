@@ -25,6 +25,7 @@ import pytesseract
 from PIL import Image
 
 from src.config import settings
+from src.tracing.forensics import SpanCategory, forensic_span
 
 log = logging.getLogger(__name__)
 
@@ -57,6 +58,7 @@ def _configure_tesseract() -> None:
 # Engine runners
 # ---------------------------------------------------------------------------
 
+@forensic_span("coremesh.tool.ocr.tesseract", SpanCategory.TOOL)
 def run_tesseract(image: np.ndarray) -> Tuple[str, float]:
     """Return *(text, mean_confidence)* where confidence is 0–100.
 
@@ -99,6 +101,7 @@ def _easyocr_results_to_text(results: list) -> str:
     )
 
 
+@forensic_span("coremesh.tool.ocr.easyocr", SpanCategory.TOOL)
 def run_easyocr(image: np.ndarray) -> Tuple[Optional[str], float]:
     """Return *(text, mean_confidence 0–100)*, or *(None, 0.0)* if unavailable."""
     reader = _get_easyocr_reader()

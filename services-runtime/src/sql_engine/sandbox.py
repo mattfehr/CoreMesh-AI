@@ -24,6 +24,7 @@ from sqlalchemy.engine import Engine
 from sqlparse import tokens as sql_tokens
 
 from src.config import settings
+from src.tracing.forensics import SpanCategory, forensic_span
 
 log = logging.getLogger(__name__)
 
@@ -143,6 +144,7 @@ class SQLSandbox:
         self.engine = engine or create_engine(settings.postgres_dsn)
         self.config = config or SQLSandboxConfig()
 
+    @forensic_span("coremesh.db.sql.introspect", SpanCategory.DATABASE)
     def introspect_schema(self, schema: str | None = None) -> DatabaseSchema:
         """Read visible table/column/key metadata through SQLAlchemy inspection."""
         inspector = inspect(self.engine)
@@ -219,6 +221,7 @@ class SQLSandbox:
             limit_applied=True,
         )
 
+    @forensic_span("coremesh.db.sql.execute", SpanCategory.DATABASE)
     def execute(self, sql: str) -> QueryResult:
         """Sanitize and execute SQL in an always-rolled-back read-only transaction."""
         sanitized = self.sanitize_sql(sql)

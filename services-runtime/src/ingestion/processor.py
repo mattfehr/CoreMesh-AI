@@ -31,6 +31,7 @@ from src.ingestion.preprocessing import page_to_grayscale, preprocess_pages
 from src.ingestion.schemas import IngestResponse
 from src.ingestion.validation import validate_invoice_totals
 from src.ingestion.vision import extract_text_via_vision
+from src.tracing.forensics import SpanCategory, forensic_span
 
 log = logging.getLogger(__name__)
 
@@ -112,6 +113,7 @@ def _ocr_page(page_np: np.ndarray, raw_gray: np.ndarray) -> Tuple[str, float, bo
 # Public entry point
 # ---------------------------------------------------------------------------
 
+@forensic_span("coremesh.tool.document.process", SpanCategory.TOOL)
 def process_document(file_bytes: bytes, filename: str) -> IngestResponse:
     """Process a document file (PDF or image) end-to-end.
 

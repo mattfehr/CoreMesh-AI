@@ -24,6 +24,7 @@ pytest-cache-files-*/
 .mypy_cache/
 .ruff_cache/
 .chroma/
+.traces/
 htmlcov/
 .coverage
 *.coveragerc

@@ -16,6 +16,7 @@ ExecutionRequestPayload
   -> deterministic textual synthesis
   -> consensus arbitration (fail closed)
   -> Chroma completed-interaction summary
+  -> JSON/SQLite forensic trace finalization
   -> OrchestrationResult
 ~~~
 
@@ -44,6 +45,10 @@ Specialist exceptions become failed observations and planning proceeds to the
 next step. Redis and Chroma persistence failures are logged and degraded. Empty
 or unarbitrated output is fail-closed: arbitration/runtime failure produces a
 blocked response and status.
+
+Every result includes a trace ID when forensics is enabled and an optional
+root-cause diagnosis when execution or arbitration degraded. Trace persistence
+is fail-open and stores hashes and metrics instead of request/response bodies.
 
 Use <code>OrchestratorDependencies</code> to inject tools, stores, and an
 arbitrator. Tests rely on that boundary; avoid hidden global clients in graph
