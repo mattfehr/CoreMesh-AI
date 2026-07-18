@@ -23,7 +23,8 @@ The default artifact is `.traces/<trace_id>.json`. It contains a flat span
 list, nested visualization tree, trigger, metrics, and optional
 `RootCauseDiagnosis`. Writes use an atomic replace. The SQLite
 `trace_registry` indexes status, confidence, trigger, diagnosed span/step and
-category, and artifact path. Negative feedback reanalyzes and upserts the row.
+category, and artifact path. Negative feedback reanalyzes and upserts the row
+when an artifact is available.
 
 ## Backward analysis
 
@@ -38,14 +39,27 @@ disagreement, confidence below `0.60`, and confidence drops of at least `0.20`.
 An optional injected `StepQualityJudge` is used only when deterministic signals
 are inconclusive and receives sanitized metadata only.
 
-## Privacy, export, and retention
+## Privacy, production feedback, export, and retention
 
 Prompt, document, response, SQL, Redis-key, user-ID, feedback-reason, and raw
 exception content are replaced by hashes and lengths. Categorical identifiers,
 counts, timings, and quality metrics are allowlisted and bounded.
 
 Tracing is fail-open: exporter, storage, registry, and judge failures cannot
-change an orchestration result. Artifacts remain until an operator removes
-them; automatic retention and feedback-to-eval generation are out of scope.
+change an orchestration result. Forensic artifacts remain until an operator
+removes them.
+
+A separate production-feedback sink is disabled by default. When enabled, it
+stores only a regex-redacted prompt, prompt fingerprint, trace/feature scope,
+and bounded arbitration signals in PostgreSQL. It never stores user IDs,
+responses, or feedback reasons; later negative feedback flips only a boolean
+for the trace. Sink failures are also fail-open. These source rows feed the
+30-day analytics miner without changing the hash-only forensic artifacts.
+The redacted prompt is published as soon as the workflow trace ID exists, then
+updated with critic scores after arbitration so mid-flight failures remain
+feedback-addressable. Connection establishment and each write have configurable
+time limits. A feedback flag still succeeds when forensic JSON is disabled or
+missing; root-cause reanalysis is simply omitted.
+
 Setting standard `OTEL_EXPORTER_OTLP_ENDPOINT` adds batched OTLP export while
-preserving local JSON. All local settings are documented in `.env.example`.
+preserving local JSON. All settings are documented in `.env.example`.

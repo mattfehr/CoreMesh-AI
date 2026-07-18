@@ -50,6 +50,13 @@ from src.tracing.forensics import (
     content_metadata,
     get_forensics,
 )
+from src.tracing.production_logs import (
+    InteractionLogSink,
+    PromptRedactor,
+    build_production_interaction,
+    configured_interaction_log_sink,
+    configured_prompt_redactor,
+)
 
 log = logging.getLogger(__name__)
 
@@ -540,7 +547,12 @@ class OrchestratorDependencies:
     semantic_memory: SemanticMemory = field(default_factory=ChromaSemanticMemory)
     arbitrator: ResponseArbitrator = field(default_factory=ConsensusArbitrator)
     forensics: ForensicsTracer = field(default_factory=get_forensics)
-
+    interaction_log_sink: InteractionLogSink = field(
+        default_factory=configured_interaction_log_sink
+    )
+    interaction_log_redactor: PromptRedactor = field(
+        default_factory=configured_prompt_redactor
+    )
 
 def build_supervisor_graph(dependencies: OrchestratorDependencies | None = None) -> Any:
     """Build a LangGraph network or the contract-compatible sequential fallback."""
@@ -606,6 +618,17 @@ def run_orchestration(
         "coremesh.agent.workflow",
         attributes=trace_attributes,
     ) as execution:
+        trace_id = execution.trace_id or uuid.uuid4().hex
+        execution.trace_id = trace_id
+        # Persist the redacted prompt immediately so later feedback can attach
+        # even if the workflow fails before arbitration completes.
+        _publish_interaction_log(
+            deps,
+            payload,
+            trace_id=trace_id,
+            arbitration_scores={},
+            arbitration_status="pending",
+        )
         initial_state = SupervisorState(request=payload, session_id=session_id)
         graph = build_supervisor_graph(deps)
         final_state = graph.invoke(_state_to_graph_dict(initial_state))
@@ -619,7 +642,7 @@ def run_orchestration(
             observations=state.observations,
             retrieved_memories=state.retrieved_memories,
             final_response=state.final_response or "",
-            trace_id=execution.trace_id,
+            trace_id=trace_id,
         )
         with deps.forensics.span(
             "coremesh.tool.arbitration",
@@ -628,6 +651,7 @@ def run_orchestration(
         ) as arbitration_span:
             result = _apply_arbitration(deps, result, payload)
             _record_arbitration_quality(arbitration_span, result.arbitration)
+        _publish_interaction_log_from_result(deps, result, payload)
         _store_long_term(deps, result)
 
         execution_errors = [
@@ -1061,6 +1085,55 @@ def _store_long_term(deps: OrchestratorDependencies, result: OrchestrationResult
             deps.semantic_memory.store_interaction(result)
     except Exception as exc:  # pragma: no cover - protects production path
         log.warning("long-term semantic memory persistence failed: %s", exc)
+
+
+def _publish_interaction_log(
+    deps: OrchestratorDependencies,
+    request: ExecutionRequestPayload,
+    *,
+    trace_id: str,
+    arbitration_scores: Mapping[str, int] | None,
+    arbitration_status: str,
+) -> None:
+    """Publish or refresh one redacted interaction without affecting delivery."""
+
+    try:
+        record = build_production_interaction(
+            trace_id=trace_id,
+            feature_scope=request.feature_scope,
+            prompt=request.payload_query,
+            arbitration_scores=arbitration_scores,
+            arbitration_status=arbitration_status,
+            redactor=deps.interaction_log_redactor,
+        )
+        deps.interaction_log_sink.record_interaction(record)
+    except Exception as exc:  # pragma: no cover - strict fail-open boundary
+        log.warning("production interaction logging failed: %s", exc)
+
+
+def _publish_interaction_log_from_result(
+    deps: OrchestratorDependencies,
+    result: OrchestrationResult,
+    request: ExecutionRequestPayload,
+) -> None:
+    """Upsert critic scores onto the already-published redacted prompt row."""
+
+    verdict = result.arbitration
+    scores = {
+        (
+            assessment.evaluation_dimension.value
+            if hasattr(assessment.evaluation_dimension, "value")
+            else str(assessment.evaluation_dimension)
+        ): assessment.assigned_score
+        for assessment in (verdict.critic_assessments if verdict else [])
+    }
+    _publish_interaction_log(
+        deps,
+        request,
+        trace_id=result.trace_id or uuid.uuid4().hex,
+        arbitration_scores=scores,
+        arbitration_status=verdict.status.value if verdict else "unavailable",
+    )
 
 
 def _synthesize_response(state: SupervisorState) -> str:

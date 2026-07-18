@@ -24,6 +24,7 @@ import os
 import sqlite3
 import threading
 import time
+import uuid
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -42,6 +43,12 @@ from opentelemetry.sdk.trace.export import (
 )
 from opentelemetry.trace import Span, SpanKind, Status, StatusCode
 from pydantic import BaseModel, Field
+
+from src.tracing.production_logs import (
+    InteractionLogSink,
+    NoOpInteractionLogSink,
+    configured_interaction_log_sink,
+)
 
 log = logging.getLogger(__name__)
 
@@ -612,10 +619,12 @@ class ForensicsTracer:
         max_attribute_length: int = 256,
         judge: StepQualityJudge | None = None,
         otlp_endpoint: str | None = None,
+        interaction_log_sink: InteractionLogSink | None = None,
     ) -> None:
         self.trace_directory = Path(trace_directory)
         self.registry_path = Path(registry_path or self.trace_directory / "registry.sqlite3")
         self.enabled = enabled
+        self.interaction_log_sink = interaction_log_sink or NoOpInteractionLogSink()
         self.max_attribute_length = max(32, max_attribute_length)
         self.analyzer = RootCauseAnalyzer(
             confidence_threshold=confidence_threshold,
@@ -644,6 +653,9 @@ class ForensicsTracer:
 
         handle = TraceExecution(trigger_reasons=[])
         if not self.enabled:
+            # Stable ID so opt-in production logs and later feedback can correlate
+            # even when forensic JSON artifacts are disabled.
+            handle.trace_id = uuid.uuid4().hex
             disabled_token = _ACTIVE_FORENSICS.set(self)
             try:
                 yield handle
@@ -779,10 +791,24 @@ class ForensicsTracer:
         self,
         trace_id: str,
         reason: str | None = None,
-    ) -> RootCauseDiagnosis:
-        """Reanalyze a stored trace after privacy-safe negative feedback."""
+    ) -> RootCauseDiagnosis | None:
+        """Flag production feedback and reanalyze an artifact when available."""
 
-        artifact = self.get_trace(trace_id)
+        try:
+            self.interaction_log_sink.flag_negative_feedback(trace_id)
+        except Exception as exc:  # pragma: no cover - strict fail-open boundary
+            log.warning(
+                "production feedback logging failed for trace %s: %s",
+                trace_id,
+                exc,
+            )
+        if not self.enabled:
+            return None
+        try:
+            artifact = self.get_trace(trace_id)
+        except FileNotFoundError:
+            log.info("no forensic artifact available for feedback trace %s", trace_id)
+            return None
         diagnosis = self.analyzer.analyze(
             trace_id,
             artifact.spans,
@@ -999,6 +1025,7 @@ def get_forensics() -> ForensicsTracer:
                     confidence_threshold=settings.forensics_confidence_threshold,
                     confidence_drop_threshold=settings.forensics_confidence_drop_threshold,
                     max_attribute_length=settings.forensics_max_attribute_length,
+                    interaction_log_sink=configured_interaction_log_sink(),
                 )
     return _DEFAULT_FORENSICS
 

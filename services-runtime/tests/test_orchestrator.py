@@ -12,6 +12,9 @@ Side effects:
 
 import sys
 from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
@@ -33,6 +36,7 @@ from src.agents.orchestrator import (  # noqa: E402
     run_orchestration,
 )
 from src.tracing.forensics import ForensicsTracer  # noqa: E402
+from src.tracing.production_logs import PromptRedactor  # noqa: E402
 
 
 DISABLED_FORENSICS = ForensicsTracer(enabled=False)
@@ -71,6 +75,45 @@ class BlockingArbitrator:
             assessments=_clean_assessments(),
             triggered_by=["logic_flagged_anomalies"],
         )
+
+
+class LowScoreArbitrator:
+    async def arbitrate(self, payload):
+        assessments = _clean_assessments()
+        assessments[1] = assessments[1].model_copy(update={"assigned_score": 2})
+        return ConsensusVerdict.blocked(
+            payload,
+            status=ConsensusStatus.BLOCKED,
+            assessments=assessments,
+            triggered_by=["logic_score_below_4"],
+        )
+
+
+class CapturingInteractionSink:
+    def __init__(self):
+        self.records = []
+        self.all_writes = []
+        self.feedback_trace_ids = []
+
+    def record_interaction(self, record):
+        # Mirror the PostgreSQL upsert: one logical row per trace.
+        self.all_writes.append(record)
+        for index, existing in enumerate(self.records):
+            if existing.trace_id == record.trace_id:
+                self.records[index] = record
+                return
+        self.records.append(record)
+
+    def flag_negative_feedback(self, trace_id):
+        self.feedback_trace_ids.append(trace_id)
+
+
+class RaisingInteractionSink:
+    def record_interaction(self, record):
+        raise RuntimeError("deliberate interaction sink failure")
+
+    def flag_negative_feedback(self, trace_id):
+        raise RuntimeError("deliberate feedback sink failure")
 
 
 class FakeRAGTool:
@@ -325,3 +368,125 @@ def test_orchestration_blocks_empty_final_response_without_crashing():
     assert result.arbitration is not None
     assert "empty_final_response" in result.arbitration.triggered_by
     assert len(dependencies.arbitrator.payloads) == 0
+
+
+def test_orchestration_publishes_only_redacted_prompt_and_bounded_scores():
+    invocation_order = []
+    sink = CapturingInteractionSink()
+    dependencies = OrchestratorDependencies(
+        rag_tool=FakeRAGTool(invocation_order),
+        document_tool=FakeDocumentTool(invocation_order),
+        sql_tool=FakeSQLTool(invocation_order),
+        short_term_memory=InMemoryShortTermMemory(),
+        semantic_memory=InMemorySemanticMemory(),
+        arbitrator=LowScoreArbitrator(),
+        forensics=DISABLED_FORENSICS,
+        interaction_log_sink=sink,
+        interaction_log_redactor=PromptRedactor(),
+    )
+
+    result = run_orchestration(
+        ExecutionRequestPayload(
+            user_id="private-user@example.test",
+            feature_scope="support",
+            payload_query="Lookup policy for alice@example.com",
+            session_context={"session_id": "production-log-test"},
+        ),
+        dependencies,
+    )
+
+    assert result.status == "blocked_by_arbitration"
+    assert len(sink.all_writes) == 2
+    assert sink.all_writes[0].arbitration_status == "pending"
+    assert len(sink.records) == 1
+    record = sink.records[0]
+    assert record.trace_id == result.trace_id
+    assert "alice@example.com" not in record.redacted_prompt
+    assert "private-user@example.test" not in str(record)
+    assert record.arbitration_scores == {"factual": 5, "logic": 2, "completeness": 5}
+    assert record.min_arbitration_score == 2
+    assert record.arbitration_status == ConsensusStatus.BLOCKED.value
+
+
+def test_interaction_log_published_before_workflow_failure(monkeypatch):
+    sink = CapturingInteractionSink()
+    dependencies = OrchestratorDependencies(
+        short_term_memory=InMemoryShortTermMemory(),
+        semantic_memory=InMemorySemanticMemory(),
+        arbitrator=PassingArbitrator(),
+        forensics=DISABLED_FORENSICS,
+        interaction_log_sink=sink,
+        interaction_log_redactor=PromptRedactor(),
+    )
+
+    def boom(_deps):
+        return SimpleNamespace(
+            invoke=lambda _state: (_ for _ in ()).throw(RuntimeError("workflow boom"))
+        )
+
+    monkeypatch.setattr(
+        "src.agents.orchestrator.build_supervisor_graph",
+        boom,
+    )
+
+    with pytest.raises(RuntimeError, match="workflow boom"):
+        run_orchestration(
+            ExecutionRequestPayload(
+                user_id="user-early-log",
+                feature_scope="support",
+                payload_query="Lookup policy for early publishing.",
+            ),
+            dependencies,
+        )
+
+    assert len(sink.records) == 1
+    assert sink.records[0].arbitration_status == "pending"
+    assert sink.records[0].redacted_prompt
+
+
+def test_interaction_sink_failure_is_fail_open():
+    invocation_order = []
+    dependencies = OrchestratorDependencies(
+        rag_tool=FakeRAGTool(invocation_order),
+        document_tool=FakeDocumentTool(invocation_order),
+        sql_tool=FakeSQLTool(invocation_order),
+        short_term_memory=InMemoryShortTermMemory(),
+        semantic_memory=InMemorySemanticMemory(),
+        arbitrator=PassingArbitrator(),
+        forensics=DISABLED_FORENSICS,
+        interaction_log_sink=RaisingInteractionSink(),
+    )
+
+    result = run_orchestration(
+        ExecutionRequestPayload(
+            user_id="user-fail-open",
+            feature_scope="support",
+            payload_query="Lookup the support policy.",
+        ),
+        dependencies,
+    )
+
+    assert result.status == "completed"
+    assert result.arbitration is not None
+    assert result.arbitration.delivery_allowed is True
+
+
+def test_dependencies_do_not_overwrite_a_shared_forensics_sink():
+    original_sink = CapturingInteractionSink()
+    publisher_sink = CapturingInteractionSink()
+    shared_forensics = ForensicsTracer(
+        enabled=False,
+        interaction_log_sink=original_sink,
+    )
+    try:
+        dependencies = OrchestratorDependencies(
+            short_term_memory=InMemoryShortTermMemory(),
+            semantic_memory=InMemorySemanticMemory(),
+            arbitrator=PassingArbitrator(),
+            forensics=shared_forensics,
+            interaction_log_sink=publisher_sink,
+        )
+        assert dependencies.interaction_log_sink is publisher_sink
+        assert shared_forensics.interaction_log_sink is original_sink
+    finally:
+        shared_forensics.shutdown()

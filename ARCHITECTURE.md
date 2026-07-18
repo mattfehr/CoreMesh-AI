@@ -7,16 +7,17 @@ phases; it does not override the checked-in code.
 
 ## System boundaries
 
-CoreMesh currently has three runtime layers:
+CoreMesh currently has four runtime layers:
 
 | Layer | Owned responsibility | Explicitly outside the layer |
 | --- | --- | --- |
 | Go gateway | Edge admission, model routing, optional semantic caching, rate limiting, and primary/fallback resilience. | Document interpretation, retrieval generation, SQL execution, and agent work. |
 | Python runtime | HTTP ingestion plus reusable retrieval, SQL, orchestration, memory, and arbitration libraries. | Edge traffic policy and persistent infrastructure lifecycle. |
 | Local data stack | PostgreSQL metadata, Redis operational state, and Qdrant vectors. | Starting the gateway/runtime or scheduling background work. |
+| Offline analytics | Redacted failure clustering, reference generation, candidate review routing, and golden-dataset promotion. | Serving requests, retaining raw prompts, or approving low-confidence labels. |
 
-The analytics directories and GitHub workflows are placeholders. They have no
-runtime edge into these layers today.
+The analytics scheduler is opt-in through its Compose profile. Fine-tuning and
+the GitHub workflows remain placeholders with no live runtime edge.
 
 ## Gateway request flow
 
@@ -207,6 +208,45 @@ releases the original text, while adjudication can release, remediate, block,
 or request manual review. No HTTP route or durable review queue currently
 consumes manual-review verdicts.
 
+### Failure forensics and production feedback
+
+OpenTelemetry forensics writes a redacted JSON tree per orchestration and a
+queryable SQLite registry. Prompt, response, identity, SQL, exception, and
+feedback bodies remain hash-and-length metadata in those artifacts.
+
+Production feedback uses a separate, explicitly enabled PostgreSQL sink. Before
+storage, the runtime applies configured regex redaction and drops user IDs,
+responses, and feedback reasons. A bounded, fail-open write stores the redacted
+prompt as soon as a trace ID exists; a monotonic terminal upsert adds critic
+scores without allowing a late pending write to erase them. Later negative
+feedback updates only the matching trace flag. Connection and statement
+timeouts keep sink failures from indefinitely delaying request processing.
+
+The scheduled miner follows this offline flow:
+
+~~~text
+30-day eligible logs (negative feedback or minimum score < 4)
+    |
+    |-- partition by feature scope
+    |-- load cached prompt/model vectors; batch embed only misses
+    |-- validate and L2 normalize the full rolling population
+    |-- HDBSCAN clusters + bounded noise candidates
+    |-- structured reference answer and validation criteria
+    v
+confidence >= 0.80 ----------------------> golden_datasets
+confidence < 0.80 -----------------------> log_miner_candidates review state
+~~~
+
+A renewable PostgreSQL lease prevents overlapping workers without pinning a
+database connection across provider calls. The lease token fences every write,
+so a worker that loses ownership cannot persist after a crash-recovery takeover.
+All eligible rows remain in each rolling-window clustering pass; a prompt/model
+embedding cache avoids repeated provider work while still allowing yesterday's
+noise to join a systemic cluster as new failures arrive. Stable source
+fingerprints and unique indexes make label retries idempotent. Source logs,
+orphaned cached embeddings, and pending review cases expire after 30 days;
+promoted golden cases have separate retention.
+
 ## State and external side effects
 
 | State or dependency | Writer or caller | Lifetime and notes |
@@ -214,12 +254,15 @@ consumes manual-review verdicts.
 | Redis rate-limit hashes | Gateway token bucket | Expiring keys; Redis is mandatory at gateway startup. |
 | Redis semantic hashes/vector index | Optional gateway cache | Successful model responses persist until TTL/volume deletion. |
 | PostgreSQL feature experiments | External control plane; gateway reads | Tables are bootstrapped by <code>init.sql</code>; no management API exists. |
+| PostgreSQL production interaction logs | Opt-in runtime publisher; miner reads | Redacted prompt plus bounded arbitration signals; source retention is 30 days. |
+| PostgreSQL miner runs/candidates/golden cases | Scheduled analytics worker | Run audits remain as operational history; pending review is bounded, while promoted cases persist per dataset policy. |
+| PostgreSQL miner lease/embedding cache | Scheduled analytics worker | Crash-recoverable run fencing; derived vectors are removed when no retained source prompt references them. |
 | PostgreSQL query target | SQL sandbox | Read-only transaction requested, results materialized, transaction rolled back. |
 | Qdrant collection | RAG dense index | Persistent named volume in Compose. |
 | In-process BM25 corpus | RAG sparse index | Lost at process exit. |
 | Redis agent sessions/events | Orchestrator | TTL controlled by runtime settings. |
 | Chroma agent summaries | Orchestrator | Local persistent directory; deterministic interaction ID upserts. |
-| OpenAI APIs | Ingestion, RAG, arbitration, gateway cache | External transmission, latency, rate limits, and cost. |
+| OpenAI APIs | Ingestion, RAG, arbitration, gateway cache, log miner | External transmission, latency, rate limits, and cost; the miner sends redacted prompts only. |
 | Anthropic API / Ollama | Arbitration | External or local provider calls when arbitration runs. |
 | OCR/model caches | EasyOCR and sentence-transformers | May download and persist model weights outside the repository. |
 | Docker named volumes/network | Docker Compose | Created on <code>up</code>; data survives container recreation. |
@@ -239,6 +282,10 @@ DSN is supplied. Restart the gateway after configuration changes.
 Detailed variable names, defaults, and validation rules live in the gateway
 and runtime READMEs next to their configuration code.
 
+The analytics worker has a separate settings lifecycle and dependency
+manifest. Its one-shot command exits on failure; its scheduler records/logs the
+job failure and remains available for the next configured cron occurrence.
+
 ## Implemented versus planned
 
 The repository intentionally carries structural placeholders from the broader
@@ -246,8 +293,7 @@ blueprint:
 
 - <code>gateway-proxy/internal/flags</code> and
   <code>gateway-proxy/internal/registry</code> contain no implementation.
-- <code>services-runtime/src/tracing</code> contains no forensics code.
-- <code>analytics-workers</code> contains no worker entry point or dependencies.
+- <code>analytics-workers/src/fine_tuner</code> contains no training pipeline.
 - the two GitHub workflow files have empty events and jobs.
 - there is no frontend or human-review application.
 

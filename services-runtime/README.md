@@ -62,6 +62,7 @@ image automatically.
 | Other arbitration | Anthropic key/model, Ollama URL/model, score threshold, retry attempts, and overall timeout. |
 | OCR | Disagreement threshold, optional Tesseract command, and optional Poppler path. |
 | Infrastructure | PostgreSQL DSN for SQL, Redis URL for agent working memory, and Qdrant URL/collection/vector size for RAG. |
+| Production feedback | Disabled-by-default publisher, JSON deployment-specific redaction patterns, and PostgreSQL connection/statement timeouts. It stores no user ID, response, or feedback reason. |
 | Agent memory | Chroma directory/collection and Redis TTL. |
 | Retrieval | Dense/sparse RRF weights, cross-encoder model, and exact technical-token priority. |
 | Forensics | Enable flag, JSON/SQLite paths, confidence/drop thresholds, redacted attribute limit, and optional standard OTLP endpoint. |
@@ -81,6 +82,9 @@ production credentials or authorization boundaries.
   specialists can invoke all preceding side effects.
 - Arbitration can transmit original prompts and synthesized responses to
   OpenAI, Anthropic, and Ollama, then block or replace output.
+- The opt-in production-feedback publisher writes regex-redacted prompts and
+  bounded arbitration signals to PostgreSQL. Its writes and later feedback
+  flag updates are fail-open and bounded by connection/statement timeouts.
 
 Heavy clients are generally lazy. Importing the FastAPI app does not connect to
 Qdrant, Redis, Chroma, PostgreSQL, or model providers.

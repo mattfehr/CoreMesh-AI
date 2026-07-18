@@ -1,12 +1,10 @@
 # Module: local CoreMesh stateful-infrastructure stack.
-# Role: supplies PostgreSQL metadata, Redis rate-limit/cache state, and Qdrant
-# vectors to the gateway and Python runtime; application services run
-# separately during development.
-# Dependencies: Docker Compose, the referenced container images, and init.sql.
+# Role: supplies PostgreSQL metadata, Redis rate-limit/cache state, Qdrant
+# vectors, and an opt-in scheduled analytics worker.
+# Dependencies: Docker Compose, referenced images, init.sql, and the analytics
+# worker build context when the analytics profile is enabled.
 # Side effects: creates named persistent volumes, a bridge network, containers,
 # and host port bindings. PostgreSQL runs init.sql only for a new data volume.
-
-version: "3.9"
 
 networks:
   coremesh-net:
@@ -42,6 +40,43 @@ services:
       timeout: 5s
       retries: 5
       start_period: 15s
+
+  # -------------------------------------------------------------------------
+  # Phase 4.1 log miner — opt-in daily production-failure curation
+  # -------------------------------------------------------------------------
+  log-miner:
+    profiles: ["analytics"]
+    build:
+      context: ./analytics-workers
+    container_name: coremesh-log-miner
+    restart: unless-stopped
+    environment:
+      POSTGRES_DSN: ${LOG_MINER_POSTGRES_DSN:-postgresql://coremesh:coremesh_secret@postgres:5432/coremesh}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      LOG_MINER_EMBEDDING_MODEL: ${LOG_MINER_EMBEDDING_MODEL:-text-embedding-3-small}
+      LOG_MINER_REFERENCE_MODEL: ${LOG_MINER_REFERENCE_MODEL:-gpt-4o}
+      LOG_MINER_EMBEDDING_BATCH_SIZE: ${LOG_MINER_EMBEDDING_BATCH_SIZE:-128}
+      LOG_MINER_PROVIDER_RETRY_ATTEMPTS: ${LOG_MINER_PROVIDER_RETRY_ATTEMPTS:-3}
+      LOG_MINER_WINDOW_DAYS: ${LOG_MINER_WINDOW_DAYS:-30}
+      LOG_MINER_RETENTION_DAYS: ${LOG_MINER_RETENTION_DAYS:-30}
+      LOG_MINER_SCORE_THRESHOLD: ${LOG_MINER_SCORE_THRESHOLD:-4}
+      LOG_MINER_MIN_CLUSTER_SIZE: ${LOG_MINER_MIN_CLUSTER_SIZE:-3}
+      LOG_MINER_MIN_SAMPLES: ${LOG_MINER_MIN_SAMPLES:-2}
+      LOG_MINER_CLUSTER_METRIC: ${LOG_MINER_CLUSTER_METRIC:-euclidean}
+      LOG_MINER_CLUSTER_SELECTION_METHOD: ${LOG_MINER_CLUSTER_SELECTION_METHOD:-eom}
+      LOG_MINER_MAX_NOISE_PER_FEATURE: ${LOG_MINER_MAX_NOISE_PER_FEATURE:-20}
+      LOG_MINER_MAX_CLUSTER_EXAMPLES: ${LOG_MINER_MAX_CLUSTER_EXAMPLES:-3}
+      LOG_MINER_PROMOTION_CONFIDENCE: ${LOG_MINER_PROMOTION_CONFIDENCE:-0.80}
+      LOG_MINER_FINGERPRINT_VERSION: ${LOG_MINER_FINGERPRINT_VERSION:-1.0}
+      LOG_MINER_LEASE_TTL_SECONDS: ${LOG_MINER_LEASE_TTL_SECONDS:-300}
+      LOG_MINER_HEARTBEAT_INTERVAL_SECONDS: ${LOG_MINER_HEARTBEAT_INTERVAL_SECONDS:-60}
+      LOG_MINER_CRON: ${LOG_MINER_CRON:-0 2 * * *}
+      LOG_MINER_TIMEZONE: ${LOG_MINER_TIMEZONE:-UTC}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - coremesh-net
 
   # -------------------------------------------------------------------------
   # Redis 7.2 — token buckets, semantic embedding cache (HNSW via RedisStack)

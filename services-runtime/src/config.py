@@ -12,6 +12,7 @@ Side effects:
 
 from typing import Optional
 
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -47,6 +48,10 @@ class Settings(BaseSettings):
 
     # Infrastructure
     postgres_dsn: str = "postgresql://coremesh:coremesh_secret@localhost:5432/coremesh"
+    production_interaction_logging_enabled: bool = False
+    production_log_redaction_patterns: list[str] = Field(default_factory=list)
+    production_log_connect_timeout_seconds: int = Field(default=3, ge=1, le=60)
+    production_log_statement_timeout_ms: int = Field(default=3_000, ge=1, le=60_000)
     redis_url: str = "redis://localhost:6379"
     qdrant_url: str = "http://localhost:6333"
     qdrant_collection: str = "coremesh_chunks"

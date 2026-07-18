@@ -21,10 +21,11 @@ larger target system and should not be read as an implementation-status report.
 - The runtime also contains tested library APIs for hybrid retrieval, guarded
   SQL, supervisor orchestration with memory, and multi-model consensus. Those
   libraries are not yet exposed as HTTP routes.
-- Docker Compose starts PostgreSQL, Redis Stack, and Qdrant only. Application
-  processes are run separately.
-- Tracing, offline analytics workers, prompt/flag management packages, and both
-  GitHub Actions workflows remain documented placeholders.
+- Docker Compose starts PostgreSQL, Redis Stack, and Qdrant by default. An
+  <code>analytics</code> profile adds the scheduled production log miner.
+- Failure forensics and the opt-in production log feedback loop are
+  implemented. Prompt/flag packages, fine-tuning, and both GitHub Actions
+  workflows remain documented placeholders.
 
 See [ARCHITECTURE.md](ARCHITECTURE.md) for detailed flows and state ownership.
 
@@ -51,9 +52,13 @@ Python runtime :8000
 
 Shared and optional state:
   Redis Stack <---- rate limits and semantic cache
-  PostgreSQL  <---- experiment metadata
+  PostgreSQL  <---- experiments, redacted interaction logs, eval datasets
   Qdrant      <---- hybrid-retrieval vectors
   Chroma      <---- long-term agent memory when orchestration is invoked
+
+Optional analytics profile:
+  Runtime -- redacted failures --> PostgreSQL --> daily HDBSCAN log miner
+                                                --> golden_datasets / review
 ~~~
 
 Middleware order matters. Requests enter autopilot first, then the optional
@@ -67,12 +72,12 @@ still pass through admission control.
 | --- | --- |
 | [gateway-proxy](gateway-proxy/README.md) | Go edge admission, routing, caching, and upstream resilience. |
 | [services-runtime](services-runtime/README.md) | FastAPI ingestion service and intelligent-runtime libraries. |
-| [analytics-workers](analytics-workers/README.md) | Documented placeholders for offline log mining and fine-tuning. |
+| [analytics-workers](analytics-workers/README.md) | Scheduled production log mining plus the fine-tuning placeholder. |
 | [.github](.github/README.md) | Repository automation; current workflows are intentionally inert. |
 | [ARCHITECTURE.md](ARCHITECTURE.md) | Cross-service flows, state, failure boundaries, and implementation status. |
 | [DOCUMENTATION.md](DOCUMENTATION.md) | Required file headers, docstrings, comments, directory READMEs, and upkeep checklist. |
-| <code>docker-compose.yml</code> | Local PostgreSQL, Redis Stack, Qdrant, volumes, network, and health checks. |
-| <code>init.sql</code> | First-boot PostgreSQL schema for prompt versions, experiments, and golden datasets. |
+| <code>docker-compose.yml</code> | Local data services plus the opt-in analytics scheduler. |
+| <code>init.sql</code> | First-boot PostgreSQL schema for prompts, experiments, redacted logs, candidates, and golden datasets. |
 
 Each major source and test directory has its own README. Start there before
 changing a subsystem; it records local invariants, dependencies, side effects,
@@ -88,7 +93,7 @@ and focused test commands.
 - Tesseract and Poppler for host-based document ingestion; the runtime
   Dockerfile installs the Linux packages
 - An OpenAI API key only for LLM extraction, vision fallback, embeddings,
-  OpenAI arbitration, or semantic caching
+  OpenAI arbitration, semantic caching, or production log labeling
 
 EasyOCR and cross-encoder models can download weights on first use. Plan for
 network access, startup time, and local cache space when invoking those paths.
@@ -153,6 +158,23 @@ See the [gateway guide](gateway-proxy/README.md) for every environment variable,
 request/response header, cache rule, identity key, circuit transition, and
 verification script.
 
+### 4. Enable the production log miner (optional)
+
+Apply the idempotent migration before starting the scheduled profile:
+
+~~~powershell
+docker compose --profile analytics run --rm log-miner migrate
+docker compose --profile analytics up -d log-miner
+~~~
+
+The runtime publisher remains disabled until
+<code>PRODUCTION_INTERACTION_LOGGING_ENABLED=true</code> is set on the runtime.
+Configure deployment-specific redaction with
+<code>PRODUCTION_LOG_REDACTION_PATTERNS</code>; connection and statement timeout
+settings bound its fail-open writes. The worker defaults to 02:00 UTC
+and requires an OpenAI key only when a real mining run reaches
+embedding/reference generation.
+
 ## HTTP surface
 
 | Process | Method and path | Behavior |
@@ -182,6 +204,14 @@ Set-Location gateway-proxy
 go test ./...
 ~~~
 
+Run analytics unit tests or the deterministic PostgreSQL smoke test from
+<code>analytics-workers</code>:
+
+~~~powershell
+python -m pytest -q
+python scripts/verify_log_miner.py
+~~~
+
 The gateway scripts exercise live routing and load behavior and require running
 dependencies. Their usage and expected assertions are documented in
 [gateway-proxy/scripts](gateway-proxy/scripts/README.md).
@@ -199,8 +229,9 @@ dependencies. Their usage and expected assertions are documented in
 | Agent orchestration and memory | Implemented as a Python library; not mounted on FastAPI. |
 | Consensus arbitration | Implemented as a Python library; not mounted on FastAPI. |
 | Prompt registry and feature-flag packages | Database contracts or directories exist; application packages are placeholders. |
-| Forensic tracing | Placeholder directory only. |
-| Log mining and fine-tuning | Placeholder directories only. |
+| Forensic tracing | Implemented as redacted OpenTelemetry JSON artifacts plus a SQLite failure registry. |
+| Production log mining | Implemented as an opt-in runtime publisher and daily HDBSCAN analytics worker. |
+| Fine-tuning | Placeholder directory only. |
 | Regression and documentation CI | Inert workflow stubs with no triggers or jobs. |
 
 ## Operational and security notes
@@ -215,7 +246,8 @@ This is a local-development stack, not a hardened deployment:
   corresponding key and fallback path are active.
 - Redis stores rate-limit state and optional cached model responses. PostgreSQL,
   Qdrant, and Chroma can persist application data when their library paths are
-  used.
+  used. Enabled interaction logging stores regex-redacted prompts for up to 30
+  days; regex redaction is defense in depth and must match deployment policy.
 - Model/API calls can incur cost and transmit content to external providers.
 
 Treat the documented headers and READMEs as part of each module contract. The

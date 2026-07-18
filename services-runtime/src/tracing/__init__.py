@@ -16,12 +16,24 @@ from src.tracing.forensics import (
     forensic_span,
     get_forensics,
 )
+from src.tracing.production_logs import (
+    InteractionLogSink,
+    NoOpInteractionLogSink,
+    PostgresInteractionLogSink,
+    ProductionInteractionLog,
+    PromptRedactor,
+)
 
 __all__ = [
     "FailureCategory",
     "FailureTrigger",
     "ForensicTraceArtifact",
     "ForensicsTracer",
+    "InteractionLogSink",
+    "NoOpInteractionLogSink",
+    "PostgresInteractionLogSink",
+    "ProductionInteractionLog",
+    "PromptRedactor",
     "RootCauseAnalyzer",
     "RootCauseDiagnosis",
     "SerializedSpan",

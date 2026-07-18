@@ -1,0 +1,16 @@
+# Module: pinned Phase 4.1 analytics-worker dependencies.
+# Role: isolates clustering, scheduling, provider, and persistence packages
+# from the request-serving Python runtime.
+# Dependencies: Python 3.11 and binary/build support for HDBSCAN.
+# Side effects: installation downloads Python/native packages.
+
+APScheduler==3.11.0
+hdbscan==0.8.40
+numpy==1.26.4
+openai==2.44.0
+psycopg2-binary==2.9.10
+pydantic==2.11.7
+pydantic-settings==2.10.1
+scikit-learn==1.6.1
+SQLAlchemy==2.0.41
+pytest==8.3.4

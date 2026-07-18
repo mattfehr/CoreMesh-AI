@@ -74,6 +74,44 @@ class UnusedDocumentTool:
         raise AssertionError("document specialist should not run")
 
 
+class RecordingInteractionSink:
+    def __init__(self):
+        self.feedback_trace_ids = []
+
+    def record_interaction(self, record):
+        return None
+
+    def flag_negative_feedback(self, trace_id):
+        self.feedback_trace_ids.append(trace_id)
+
+
+class RaisingInteractionSink:
+    def record_interaction(self, record):
+        raise RuntimeError("deliberate record failure")
+
+    def flag_negative_feedback(self, trace_id):
+        raise RuntimeError("deliberate feedback failure")
+
+
+def test_feedback_without_forensic_artifact_still_updates_production_sink(tmp_path):
+    for enabled in (False, True):
+        interaction_sink = RecordingInteractionSink()
+        tracer = ForensicsTracer(
+            trace_directory=tmp_path / f"missing-traces-{enabled}",
+            enabled=enabled,
+            interaction_log_sink=interaction_sink,
+        )
+        try:
+            diagnosis = tracer.flag_negative_feedback(
+                f"production-only-{enabled}", "PRIVATE"
+            )
+            assert diagnosis is None
+            assert interaction_sink.feedback_trace_ids == [f"production-only-{enabled}"]
+            assert not tracer.trace_directory.exists()
+        finally:
+            tracer.shutdown()
+
+
 def test_deliberate_sub_agent_error_writes_exact_json_root_cause(tmp_path):
     trace_directory = tmp_path / "traces"
     registry_path = trace_directory / "registry.sqlite3"
@@ -151,9 +189,11 @@ def test_deliberate_sub_agent_error_writes_exact_json_root_cause(tmp_path):
 def test_backward_analyzer_selects_first_confidence_drop_and_feedback_updates_registry(
     tmp_path,
 ):
+    interaction_sink = RecordingInteractionSink()
     tracer = ForensicsTracer(
         trace_directory=tmp_path / "traces",
         registry_path=tmp_path / "traces" / "registry.sqlite3",
+        interaction_log_sink=interaction_sink,
     )
 
     try:
@@ -207,8 +247,27 @@ def test_backward_analyzer_selects_first_confidence_drop_and_feedback_updates_re
         stored = tracer.get_trace(execution.trace_id)
         assert stored.trigger == FailureTrigger.NEGATIVE_FEEDBACK
         assert stored.feedback is not None
+        assert interaction_sink.feedback_trace_ids == [execution.trace_id]
         serialized = stored.model_dump_json()
         assert "PRIVATE_FEEDBACK_REASON" not in serialized
+    finally:
+        tracer.shutdown()
+
+
+def test_production_feedback_sink_failure_does_not_block_forensic_update(tmp_path):
+    tracer = ForensicsTracer(
+        trace_directory=tmp_path / "traces",
+        interaction_log_sink=RaisingInteractionSink(),
+    )
+    try:
+        with tracer.execution("coremesh.agent.workflow") as execution:
+            with tracer.span("coremesh.tool.safe", SpanCategory.TOOL):
+                pass
+
+        diagnosis = tracer.flag_negative_feedback(execution.trace_id, "PRIVATE_REASON")
+
+        assert diagnosis.trace_id == execution.trace_id
+        assert tracer.get_trace(execution.trace_id).trigger == FailureTrigger.NEGATIVE_FEEDBACK
     finally:
         tracer.shutdown()
 
