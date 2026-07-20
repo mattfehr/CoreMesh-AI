@@ -1,11 +1,268 @@
-# Module: placeholder model-regression workflow.
-# Role: reserves the planned CI entry point for evaluating golden datasets
-# when prompts or model behavior change.
-# Dependencies: GitHub Actions; the future implementation will also require
-# the CoreMesh data services and an evaluation runner.
-# Side effects: none today. Empty triggers and jobs keep this workflow inert.
+# Module: CoreMesh model-regression GitHub Actions workflow.
+# Role: runs golden-dataset evaluations for PR base/head revisions and blocks
+# merges when overall or per-feature accuracy drops by more than the threshold.
+# Dependencies: Docker Compose, Python 3.11, analytics-workers evaluator, and
+# the app-profile CoreMesh services in docker-compose.yml.
+# Side effects: builds local images, creates/removes Compose containers and
+# volumes, posts a PR summary comment, uploads reports, and optionally sends a
+# Slack webhook notification when SLACK_WEBHOOK_URL is configured.
 #
 # Roadmap source: CoreMesh Phase 4.2 / AI Engineering Guide Project 1.
 name: model-regression-ci
-on: {}
-jobs: {}
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/model-regression-ci.yml"
+      - "docker-compose.yml"
+      - "init.sql"
+      - "prompts/**"
+      - "services-runtime/**"
+      - "gateway-proxy/**"
+      - "analytics-workers/**"
+  workflow_dispatch:
+    inputs:
+      baseline_ref:
+        description: "Git ref to compare against when run manually."
+        required: false
+        default: "main"
+      max_drop:
+        description: "Maximum allowed accuracy drop."
+        required: false
+        default: "0.03"
+      min_accuracy:
+        description: "Minimum allowed candidate accuracy."
+        required: false
+        default: "0.90"
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: model-regression-ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  regression:
+    runs-on: ubuntu-latest
+    timeout-minutes: 70
+    env:
+      POSTGRES_DSN: postgresql://coremesh:coremesh_secret@localhost:5432/coremesh
+      REGRESSION_MAX_ACCURACY_DROP: ${{ github.event.inputs.max_drop || '0.03' }}
+      REGRESSION_MIN_ACCURACY: ${{ github.event.inputs.min_accuracy || '0.90' }}
+      BASE_REF: ${{ github.event.pull_request.base.sha || github.event.inputs.baseline_ref || github.event.repository.default_branch }}
+      HEAD_REF: ${{ github.event.pull_request.head.sha || github.sha }}
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+      COREMESH_CHAT_STUB: "true"
+
+    steps:
+      - name: Checkout baseline
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.BASE_REF }}
+          path: baseline
+
+      - name: Checkout candidate
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.HEAD_REF }}
+          path: candidate
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: candidate/analytics-workers/requirements.txt
+
+      - name: Install evaluator dependencies
+        working-directory: candidate/analytics-workers
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+
+      - name: Evaluate baseline and candidate
+        id: evaluate
+        env:
+          PYTHONPATH: ${{ github.workspace }}/candidate/analytics-workers
+        run: |
+          set -euo pipefail
+
+          wait_for_postgres() {
+            for attempt in {1..60}; do
+              if docker compose exec -T postgres pg_isready -U coremesh -d coremesh >/dev/null 2>&1; then
+                return 0
+              fi
+              sleep 2
+            done
+            echo "Timed out waiting for Postgres health" >&2
+            docker compose ps
+            return 1
+          }
+
+          wait_for_http() {
+            local name="$1"
+            local url="$2"
+            for attempt in {1..60}; do
+              if curl -fsS "$url" >/dev/null; then
+                return 0
+              fi
+              sleep 2
+            done
+            echo "Timed out waiting for ${name} at ${url}" >&2
+            docker compose ps
+            return 1
+          }
+
+          evaluate_revision() {
+            local label="$1"
+            local checkout="$2"
+            local output_dir="${GITHUB_WORKSPACE}/reports/${label}"
+            local status=0
+            mkdir -p "${output_dir}"
+
+            pushd "${GITHUB_WORKSPACE}/candidate" >/dev/null
+            docker compose down -v --remove-orphans >/dev/null 2>&1 || true
+
+            export COREMESH_RUNTIME_CONTEXT="${GITHUB_WORKSPACE}/${checkout}/services-runtime"
+            export COREMESH_GATEWAY_CONTEXT="${GITHUB_WORKSPACE}/${checkout}/gateway-proxy"
+            export SEMANTIC_CACHE_ENABLED=false
+            export COREMESH_CHAT_STUB=true
+
+            docker compose --profile app up -d --build postgres redis qdrant runtime gateway || status=$?
+            if [ "${status}" -eq 0 ]; then
+              wait_for_postgres || status=$?
+            fi
+            if [ "${status}" -eq 0 ]; then
+              wait_for_http "runtime" "http://localhost:8000/health" || status=$?
+            fi
+            if [ "${status}" -eq 0 ]; then
+              wait_for_http "gateway" "http://localhost:8080/healthz" || status=$?
+            fi
+            if [ "${status}" -eq 0 ]; then
+              python -m src.model_regression.runner seed \
+                --postgres-dsn "${POSTGRES_DSN}" || status=$?
+            fi
+            if [ "${status}" -eq 0 ]; then
+              python -m src.model_regression.runner run \
+                --postgres-dsn "${POSTGRES_DSN}" \
+                --gateway-url "http://localhost:8080" \
+                --output "${output_dir}/report.json" \
+                --markdown-output "${output_dir}/report.md" \
+                --html-output "${output_dir}/report.html" \
+                --openai-api-key "${OPENAI_API_KEY}" \
+                --run-label "${label}" \
+                --revision "$([ "${label}" = "baseline" ] && echo "${BASE_REF}" || echo "${HEAD_REF}")" || status=$?
+            fi
+
+            docker compose logs --no-color > "${output_dir}/compose.log" 2>&1 || true
+            docker compose down -v --remove-orphans >/dev/null 2>&1 || true
+            popd >/dev/null
+            return "${status}"
+          }
+
+          baseline_status=0
+          candidate_status=0
+          evaluate_revision baseline baseline || baseline_status=$?
+          evaluate_revision candidate candidate || candidate_status=$?
+
+          if [ "${baseline_status}" -ne 0 ] || [ "${candidate_status}" -ne 0 ]; then
+            echo "Evaluation failed (baseline=${baseline_status}, candidate=${candidate_status})" >&2
+            exit 1
+          fi
+
+      - name: Compare reports
+        id: compare
+        if: always()
+        continue-on-error: true
+        env:
+          PYTHONPATH: ${{ github.workspace }}/candidate/analytics-workers
+        run: |
+          set -euo pipefail
+          if [ ! -f reports/baseline/report.json ] || [ ! -f reports/candidate/report.json ]; then
+            echo "Missing baseline and/or candidate report.json; cannot compare." >&2
+            exit 1
+          fi
+          set +e
+          python -m src.model_regression.runner compare \
+            --baseline reports/baseline/report.json \
+            --candidate reports/candidate/report.json \
+            --output reports/comparison.json \
+            --markdown-output reports/comparison.md \
+            --html-output reports/comparison.html \
+            --max-drop "${REGRESSION_MAX_ACCURACY_DROP}" \
+            --min-accuracy "${REGRESSION_MIN_ACCURACY}"
+          status=$?
+          set -e
+          if [ -f reports/comparison.md ]; then
+            cat reports/comparison.md >> "${GITHUB_STEP_SUMMARY}"
+          fi
+          exit "${status}"
+
+      - name: Upload regression reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: model-regression-reports
+          path: reports/**
+          retention-days: 14
+
+      - name: Comment on pull request
+        if: always() && github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        continue-on-error: true
+        with:
+          script: |
+            const fs = require('fs');
+            const path = 'reports/comparison.md';
+            if (!fs.existsSync(path)) {
+              core.info('No comparison report found; skipping PR comment.');
+              return;
+            }
+            const marker = '<!-- coremesh-model-regression-ci -->';
+            const body = `${marker}\n${fs.readFileSync(path, 'utf8')}`;
+            const issue_number = context.payload.pull_request.number;
+            const {owner, repo} = context.repo;
+            const {data: comments} = await github.rest.issues.listComments({
+              owner,
+              repo,
+              issue_number,
+              per_page: 100,
+            });
+            const existing = comments.find((comment) => comment.body && comment.body.includes(marker));
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner,
+                repo,
+                comment_id: existing.id,
+                body,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner,
+                repo,
+                issue_number,
+                body,
+              });
+            }
+
+      - name: Send Slack alert
+        if: always() && env.SLACK_WEBHOOK_URL != ''
+        continue-on-error: true
+        env:
+          PYTHONPATH: ${{ github.workspace }}/candidate/analytics-workers
+        run: |
+          if [ -f reports/comparison.json ]; then
+            python -m src.model_regression.runner slack \
+              --comparison reports/comparison.json \
+              --webhook-url "${SLACK_WEBHOOK_URL}" \
+              --run-url "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          fi
+
+      - name: Enforce regression gate
+        if: always() && (steps.compare.outcome == 'failure' || steps.evaluate.outcome == 'failure')
+        run: |
+          echo "Model regression gate failed. See uploaded reports for details." >&2
+          exit 1

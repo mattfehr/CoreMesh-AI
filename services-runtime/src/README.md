@@ -5,8 +5,9 @@ feature libraries:
 
 | Module or package | Integration state |
 | --- | --- |
-| <code>main.py</code> | FastAPI app with <code>/health</code> and <code>/v1/ingest</code>. |
+| <code>main.py</code> | FastAPI app with <code>/health</code>, <code>/v1/ingest</code>, and <code>/v1/chat/completions</code>. |
 | <code>config.py</code> | Import-time typed settings shared by all subsystems. |
+| [chat](chat/README.md) | Minimal OpenAI-shaped chat completions helper for gateway/CI. |
 | [ingestion](ingestion/README.md) | Mounted on FastAPI and reused by agents. |
 | [rag](rag/README.md) | Python API only. |
 | [sql_engine](sql_engine/README.md) | Python API only. |

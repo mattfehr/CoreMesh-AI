@@ -6,10 +6,11 @@ runtime behavior. GitHub reads workflow definitions from
 
 ## Current state
 
-Both checked-in workflows are documented placeholders and are deliberately
-inert: each has empty triggers and no jobs. They express roadmap integration
-points without implying that regression evaluation or automatic documentation
-repair is already running.
+| Workflow | Status |
+| --- | --- |
+| <code>model-regression-ci.yml</code> | Active. Boots the Compose <code>app</code> profile, evaluates <code>golden_datasets</code>, and fails on accuracy floor or >3% relative drop. |
+| <code>self-healing-docs.yml</code> | Still inert (empty triggers/jobs). |
 
-See [the workflow guide](workflows/README.md) for activation prerequisites and
-the side effects that future implementations must make explicit.
+Optional secrets: <code>OPENAI_API_KEY</code> (required only for <code>llm_judge</code> rows), <code>SLACK_WEBHOOK_URL</code> (non-blocking alerts).
+
+See [the workflow guide](workflows/README.md) for triggers, permissions, and gate details.

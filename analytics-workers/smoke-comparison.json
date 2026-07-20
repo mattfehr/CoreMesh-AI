@@ -1,0 +1,68 @@
+{
+  "added_cases": [],
+  "baseline": {
+    "revision": "",
+    "run_label": "",
+    "summary": {
+      "accuracy": 1.0,
+      "case_count": 3,
+      "failed_count": 0,
+      "pass_rate": 1.0,
+      "passed_count": 3
+    }
+  },
+  "candidate": {
+    "revision": "",
+    "run_label": "",
+    "summary": {
+      "accuracy": 1.0,
+      "case_count": 3,
+      "failed_count": 0,
+      "pass_rate": 1.0,
+      "passed_count": 3
+    }
+  },
+  "checks": [
+    {
+      "baseline_accuracy": 1.0,
+      "candidate_accuracy": 1.0,
+      "drop": 0.0,
+      "max_drop": 0.03,
+      "scope": "overall",
+      "status": "pass"
+    },
+    {
+      "baseline_accuracy": null,
+      "candidate_accuracy": 1.0,
+      "drop": null,
+      "max_drop": null,
+      "min_accuracy": 0.9,
+      "scope": "min_accuracy",
+      "status": "pass"
+    },
+    {
+      "baseline_accuracy": 1.0,
+      "candidate_accuracy": 1.0,
+      "drop": 0.0,
+      "max_drop": 0.03,
+      "scope": "gateway_autopilot",
+      "status": "pass"
+    },
+    {
+      "baseline_accuracy": 1.0,
+      "candidate_accuracy": 1.0,
+      "drop": 0.0,
+      "max_drop": 0.03,
+      "scope": "runtime_chat",
+      "status": "pass"
+    }
+  ],
+  "generated_at": "2026-07-20T23:50:08.774632Z",
+  "improvements": [],
+  "max_drop": 0.03,
+  "min_accuracy": 0.9,
+  "missing_cases": [],
+  "regressions": [],
+  "schema_version": "coremesh-model-regression-comparison-v1",
+  "status": "pass"
+}

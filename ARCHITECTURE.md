@@ -12,12 +12,14 @@ CoreMesh currently has four runtime layers:
 | Layer | Owned responsibility | Explicitly outside the layer |
 | --- | --- | --- |
 | Go gateway | Edge admission, model routing, optional semantic caching, rate limiting, and primary/fallback resilience. | Document interpretation, retrieval generation, SQL execution, and agent work. |
-| Python runtime | HTTP ingestion plus reusable retrieval, SQL, orchestration, memory, and arbitration libraries. | Edge traffic policy and persistent infrastructure lifecycle. |
+| Python runtime | HTTP ingestion, minimal chat completions, plus reusable retrieval, SQL, orchestration, memory, and arbitration libraries. | Edge traffic policy and persistent infrastructure lifecycle. |
 | Local data stack | PostgreSQL metadata, Redis operational state, and Qdrant vectors. | Starting the gateway/runtime or scheduling background work. |
 | Offline analytics | Redacted failure clustering, reference generation, candidate review routing, and golden-dataset promotion. | Serving requests, retaining raw prompts, or approving low-confidence labels. |
 
-The analytics scheduler is opt-in through its Compose profile. Fine-tuning and
-the GitHub workflows remain placeholders with no live runtime edge.
+The analytics scheduler is opt-in through its Compose profile. An
+<code>app</code> Compose profile boots the runtime and gateway for local/CI
+smoke tests. Model-regression GitHub Actions CI is live; self-healing docs and
+fine-tuning remain placeholders.
 
 ## Gateway request flow
 
@@ -294,7 +296,8 @@ blueprint:
 - <code>gateway-proxy/internal/flags</code> and
   <code>gateway-proxy/internal/registry</code> contain no implementation.
 - <code>analytics-workers/src/fine_tuner</code> contains no training pipeline.
-- the two GitHub workflow files have empty events and jobs.
+- <code>.github/workflows/self-healing-docs.yml</code> has empty events and jobs;
+  model-regression CI is active.
 - there is no frontend or human-review application.
 
 When one of these becomes real, update its README, file headers, this document,

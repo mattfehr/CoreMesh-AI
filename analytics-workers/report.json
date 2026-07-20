@@ -1,0 +1,144 @@
+{
+  "by_feature_scope": {
+    "gateway_autopilot": {
+      "accuracy": 1.0,
+      "case_count": 2,
+      "failed_count": 0,
+      "pass_rate": 1.0,
+      "passed_count": 2
+    },
+    "runtime_chat": {
+      "accuracy": 1.0,
+      "case_count": 1,
+      "failed_count": 0,
+      "pass_rate": 1.0,
+      "passed_count": 1
+    }
+  },
+  "cases": [
+    {
+      "case_id": "e0e6f574-c657-522b-9358-c708bda5c78b",
+      "case_key": "77e43eed1f0037ae93d6544a1ec91835b56ae24d074694dfac0e93fede976e95",
+      "details": {
+        "actual_headers": {
+          "X-CoreMesh-Autopilot-Tier": "tier-3",
+          "X-CoreMesh-Cache-Policy": "bypass",
+          "X-CoreMesh-Routed-Model": "gpt-4o"
+        },
+        "expected_headers": {
+          "X-CoreMesh-Autopilot-Tier": "tier-3",
+          "X-CoreMesh-Cache-Policy": "bypass",
+          "X-CoreMesh-Routed-Model": "gpt-4o"
+        }
+      },
+      "difficulty_rating": "hard",
+      "failure_reasons": [],
+      "feature_scope": "gateway_autopilot",
+      "latency_ms": 35.96,
+      "mode": "headers",
+      "origin_source": "human_curated",
+      "passed": true,
+      "request_path": "/v1/chat/completions",
+      "score": 1.0,
+      "source_fingerprint": "77e43eed1f0037ae93d6544a1ec91835b56ae24d074694dfac0e93fede976e95",
+      "status": 200
+    },
+    {
+      "case_id": "c4b74c18-c82d-50bf-aa33-43f2a5197a60",
+      "case_key": "946783de6706f53cb117efa646d6b7e685e7607217a772fd10c3b36703e45d36",
+      "details": {
+        "actual_headers": {
+          "X-CoreMesh-Autopilot-Tier": "tier-1",
+          "X-CoreMesh-Cache-Policy": "allow",
+          "X-CoreMesh-Routed-Model": "gpt-4o-mini"
+        },
+        "expected_headers": {
+          "X-CoreMesh-Autopilot-Tier": "tier-1",
+          "X-CoreMesh-Cache-Policy": "allow",
+          "X-CoreMesh-Routed-Model": "gpt-4o-mini"
+        }
+      },
+      "difficulty_rating": "simple",
+      "failure_reasons": [],
+      "feature_scope": "gateway_autopilot",
+      "latency_ms": 15.37,
+      "mode": "headers",
+      "origin_source": "human_curated",
+      "passed": true,
+      "request_path": "/v1/chat/completions",
+      "score": 1.0,
+      "source_fingerprint": "946783de6706f53cb117efa646d6b7e685e7607217a772fd10c3b36703e45d36",
+      "status": 200
+    },
+    {
+      "case_id": "1e7414d2-f04c-5f22-9909-0551878db959",
+      "case_key": "6d1836690e945ffeabad0160ed55090cf5d0f2b3580d4c65e4fc56c36b73956b",
+      "details": {
+        "actual_json": {
+          "choices": [
+            {
+              "finish_reason": "stop",
+              "index": 0,
+              "message": {
+                "content": "coremesh-chat-stub: Ping CoreMesh chat path.",
+                "role": "assistant"
+              }
+            }
+          ],
+          "id": "chatcmpl-coremesh-stub",
+          "model": "gpt-4o-mini",
+          "object": "chat.completion",
+          "usage": {
+            "completion_tokens": 0,
+            "prompt_tokens": 0,
+            "total_tokens": 0
+          }
+        },
+        "expected_json": {
+          "choices": [
+            {
+              "finish_reason": "stop",
+              "index": 0,
+              "message": {
+                "content": "coremesh-chat-stub: Ping CoreMesh chat path.",
+                "role": "assistant"
+              }
+            }
+          ],
+          "id": "chatcmpl-coremesh-stub",
+          "model": "gpt-4o-mini",
+          "object": "chat.completion",
+          "usage": {
+            "completion_tokens": 0,
+            "prompt_tokens": 0,
+            "total_tokens": 0
+          }
+        }
+      },
+      "difficulty_rating": "simple",
+      "failure_reasons": [],
+      "feature_scope": "runtime_chat",
+      "latency_ms": 15.57,
+      "mode": "exact_json",
+      "origin_source": "human_curated",
+      "passed": true,
+      "request_path": "/v1/chat/completions",
+      "score": 1.0,
+      "source_fingerprint": "6d1836690e945ffeabad0160ed55090cf5d0f2b3580d4c65e4fc56c36b73956b",
+      "status": 200
+    }
+  ],
+  "gateway_url": "http://localhost:8080",
+  "generated_at": "2026-07-20T23:51:01.297430Z",
+  "revision": "",
+  "run_id": "1381b57e-38f4-4ebf-8317-5e2e227dbdce",
+  "run_label": "",
+  "schema_version": "coremesh-model-regression-report-v1",
+  "summary": {
+    "accuracy": 1.0,
+    "case_count": 3,
+    "failed_count": 0,
+    "pass_rate": 1.0,
+    "passed_count": 3
+  }
+}

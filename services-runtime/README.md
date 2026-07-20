@@ -1,9 +1,9 @@
 # CoreMesh intelligent runtime
 
-This Python service owns document ingestion and provides reusable intelligent
-runtime libraries for retrieval, guarded SQL, agent orchestration, memory, and
-consensus arbitration. The checked-in FastAPI application exposes only
-liveness and ingestion; the other capabilities require trusted Python callers.
+This Python service owns document ingestion and a minimal OpenAI-shaped chat
+completions path for gateway/regression traffic. Retrieval, guarded SQL, agent
+orchestration, memory, and consensus arbitration remain reusable Python
+libraries for trusted callers.
 
 ## HTTP surface
 
@@ -11,6 +11,11 @@ liveness and ingestion; the other capabilities require trusted Python callers.
 | --- | --- |
 | <code>GET /health</code> | Process liveness only; no infrastructure check. |
 | <code>POST /v1/ingest</code> | Multipart PDF/raster upload to typed invoice extraction and validation. |
+| <code>POST /v1/chat/completions</code> | OpenAI-shaped chat body; deterministic stub unless live OpenAI is enabled. |
+
+Chat completions return a stable stub when <code>COREMESH_CHAT_STUB=true</code>
+or <code>OPENAI_API_KEY</code> is unset. With a key and stub disabled, the
+runtime forwards to OpenAI.
 
 The ingestion route accepts PDF, PNG, JPEG, TIFF, BMP, and WebP content types.
 It reads the entire upload into memory, rejects empty/unsupported input, moves

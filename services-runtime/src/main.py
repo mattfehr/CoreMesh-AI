@@ -1,12 +1,13 @@
 """CoreMesh AI — Python Runtime Service.
 
 System role:
-    Owns the public runtime HTTP boundary. Only liveness and document ingestion
-    are mounted today; RAG, SQL, orchestration, and arbitration remain Python
-    library APIs.
+    Owns the public runtime HTTP boundary. Liveness, document ingestion, and a
+    minimal OpenAI-shaped chat completions path are mounted today; RAG, SQL,
+    orchestration, and arbitration remain Python library APIs.
 Dependencies:
     FastAPI handles HTTP/multipart contracts, ingestion owns blocking document
-    work, and structlog emits request lifecycle metadata.
+    work, chat completions may call OpenAI, and structlog emits request
+    lifecycle metadata.
 Side effects:
     Import configures structlog and constructs the FastAPI app. Requests read
     uploads into memory, run CPU/native work in a thread, and may call OpenAI.
@@ -18,7 +19,9 @@ import logging
 
 import structlog
 from fastapi import FastAPI, File, HTTPException, UploadFile, status
+from pydantic import ValidationError
 
+from src.chat.completions import ChatCompletionRequest, build_chat_completion
 from src.ingestion.processor import process_document
 from src.ingestion.schemas import IngestResponse
 
@@ -54,6 +57,45 @@ _ALLOWED_CONTENT_TYPES = {
 async def health() -> dict:
     """Return process liveness without contacting infrastructure providers."""
     return {"status": "ok", "service": "coremesh-runtime"}
+
+
+# ---------------------------------------------------------------------------
+# Chat completions (minimal OpenAI-compatible surface for gateway/CI)
+# ---------------------------------------------------------------------------
+
+@app.post(
+    "/v1/chat/completions",
+    tags=["chat"],
+    summary="OpenAI-shaped chat completions for gateway regression traffic.",
+    description=(
+        "Accepts an OpenAI chat.completions JSON body. When COREMESH_CHAT_STUB "
+        "is true or OPENAI_API_KEY is unset, returns a deterministic stub "
+        "completion. Otherwise forwards to OpenAI."
+    ),
+)
+async def chat_completions(payload: dict) -> dict:
+    """Validate and answer one OpenAI-shaped chat completion request."""
+    try:
+        request = ChatCompletionRequest.model_validate(payload)
+    except ValidationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=exc.errors(),
+        ) from exc
+
+    try:
+        return await asyncio.to_thread(build_chat_completion, request)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(exc),
+        ) from exc
+    except Exception as exc:
+        log.error("chat.completions.error", error=str(exc))
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"Chat completion failed: {exc}",
+        ) from exc
 
 
 # ---------------------------------------------------------------------------

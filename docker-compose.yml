@@ -1,8 +1,8 @@
-# Module: local CoreMesh stateful-infrastructure stack.
+# Module: local CoreMesh development and CI stack.
 # Role: supplies PostgreSQL metadata, Redis rate-limit/cache state, Qdrant
-# vectors, and an opt-in scheduled analytics worker.
+# vectors, optional app services, and an opt-in scheduled analytics worker.
 # Dependencies: Docker Compose, referenced images, init.sql, and the analytics
-# worker build context when the analytics profile is enabled.
+# worker/runtime/gateway build contexts when their profiles are enabled.
 # Side effects: creates named persistent volumes, a bridge network, containers,
 # and host port bindings. PostgreSQL runs init.sql only for a new data volume.
 
@@ -40,6 +40,81 @@ services:
       timeout: 5s
       retries: 5
       start_period: 15s
+
+  # -------------------------------------------------------------------------
+  # Python runtime - app-profile HTTP runtime service for local/CI smoke tests
+  # -------------------------------------------------------------------------
+  runtime:
+    profiles: ["app"]
+    build:
+      context: "${COREMESH_RUNTIME_CONTEXT:-./services-runtime}"
+    container_name: coremesh-runtime
+    restart: unless-stopped
+    environment:
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_EXTRACTION_MODEL: ${OPENAI_EXTRACTION_MODEL:-gpt-4o-mini}
+      OPENAI_VISION_MODEL: ${OPENAI_VISION_MODEL:-gpt-4o}
+      OPENAI_EMBEDDING_MODEL: ${OPENAI_EMBEDDING_MODEL:-text-embedding-3-small}
+      COREMESH_CHAT_STUB: ${COREMESH_CHAT_STUB:-}
+      POSTGRES_DSN: ${RUNTIME_POSTGRES_DSN:-postgresql://coremesh:coremesh_secret@postgres:5432/coremesh}
+      PRODUCTION_INTERACTION_LOGGING_ENABLED: ${PRODUCTION_INTERACTION_LOGGING_ENABLED:-false}
+      REDIS_URL: ${RUNTIME_REDIS_URL:-redis://redis:6379}
+      QDRANT_URL: ${RUNTIME_QDRANT_URL:-http://qdrant:6333}
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      qdrant:
+        condition: service_healthy
+    networks:
+      - coremesh-net
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8000/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+
+  # -------------------------------------------------------------------------
+  # Go gateway - app-profile edge proxy in front of the Python runtime
+  # -------------------------------------------------------------------------
+  gateway:
+    profiles: ["app"]
+    build:
+      context: "${COREMESH_GATEWAY_CONTEXT:-./gateway-proxy}"
+    container_name: coremesh-gateway
+    restart: unless-stopped
+    environment:
+      GATEWAY_PRIMARY_URL: ${GATEWAY_PRIMARY_URL:-http://runtime:8000}
+      GATEWAY_FALLBACK_URL: ${GATEWAY_FALLBACK_URL:-http://runtime:8000}
+      REDIS_URL: ${GATEWAY_REDIS_URL:-redis://redis:6379}
+      POSTGRES_DSN: ${GATEWAY_POSTGRES_DSN:-postgresql://coremesh:coremesh_secret@postgres:5432/coremesh}
+      AUTOPILOT_ENABLED: ${AUTOPILOT_ENABLED:-true}
+      AUTOPILOT_TIER1_MODEL: ${AUTOPILOT_TIER1_MODEL:-gpt-4o-mini}
+      AUTOPILOT_TIER3_MODEL: ${AUTOPILOT_TIER3_MODEL:-gpt-4o}
+      SEMANTIC_CACHE_ENABLED: ${SEMANTIC_CACHE_ENABLED:-false}
+      RATE_LIMIT_CAPACITY: ${RATE_LIMIT_CAPACITY:-100}
+      RATE_LIMIT_REFILL_PER_SECOND: ${RATE_LIMIT_REFILL_PER_SECOND:-20}
+    ports:
+      - "8080:8080"
+    depends_on:
+      runtime:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    networks:
+      - coremesh-net
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8080/healthz >/dev/null 2>&1 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
 
   # -------------------------------------------------------------------------
   # Phase 4.1 log miner — opt-in daily production-failure curation
@@ -119,7 +194,7 @@ services:
     networks:
       - coremesh-net
     healthcheck:
-      test: ["CMD-SHELL", "curl -sf http://localhost:6333/healthz || exit 1"]
+      test: ["CMD-SHELL", "bash -c ':</dev/tcp/127.0.0.1/6333'"]
       interval: 15s
       timeout: 5s
       retries: 5

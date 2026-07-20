@@ -15,17 +15,20 @@ larger target system and should not be read as an implementation-status report.
   primary/fallback reverse proxying, a concurrency-safe circuit breaker,
   request-complexity model routing, experiment splits, and an optional semantic
   response cache.
-- The FastAPI runtime on port 8000 exposes liveness and document-ingestion
-  endpoints. Ingestion performs image preprocessing, dual-engine OCR, optional
-  vision fallback, structured extraction, and invoice-total validation.
+- The FastAPI runtime on port 8000 exposes liveness, document-ingestion, and a
+  minimal OpenAI-shaped <code>/v1/chat/completions</code> path (deterministic
+  stub unless live OpenAI is enabled). Ingestion performs image preprocessing,
+  dual-engine OCR, optional vision fallback, structured extraction, and
+  invoice-total validation.
 - The runtime also contains tested library APIs for hybrid retrieval, guarded
   SQL, supervisor orchestration with memory, and multi-model consensus. Those
-  libraries are not yet exposed as HTTP routes.
+  libraries are not yet exposed as additional HTTP routes.
 - Docker Compose starts PostgreSQL, Redis Stack, and Qdrant by default. An
-  <code>analytics</code> profile adds the scheduled production log miner.
+  <code>app</code> profile boots runtime and gateway; an <code>analytics</code>
+  profile adds the scheduled production log miner.
 - Failure forensics and the opt-in production log feedback loop are
-  implemented. Prompt/flag packages, fine-tuning, and both GitHub Actions
-  workflows remain documented placeholders.
+  implemented. Model-regression CI is live. Prompt/flag packages, fine-tuning,
+  and the self-healing-docs workflow remain documented placeholders.
 
 See [ARCHITECTURE.md](ARCHITECTURE.md) for detailed flows and state ownership.
 
@@ -47,6 +50,7 @@ Go gateway :8080
 Python runtime :8000
   |-- /health
   |-- /v1/ingest
+  |-- /v1/chat/completions
   |
   +--> OCR engines / optional OpenAI calls
 
@@ -72,11 +76,11 @@ still pass through admission control.
 | --- | --- |
 | [gateway-proxy](gateway-proxy/README.md) | Go edge admission, routing, caching, and upstream resilience. |
 | [services-runtime](services-runtime/README.md) | FastAPI ingestion service and intelligent-runtime libraries. |
-| [analytics-workers](analytics-workers/README.md) | Scheduled production log mining plus the fine-tuning placeholder. |
-| [.github](.github/README.md) | Repository automation; current workflows are intentionally inert. |
+| [analytics-workers](analytics-workers/README.md) | Scheduled production log mining, model-regression evaluator, and fine-tuning placeholder. |
+| [.github](.github/README.md) | Repository automation; model-regression CI is active, self-healing docs remains inert. |
 | [ARCHITECTURE.md](ARCHITECTURE.md) | Cross-service flows, state, failure boundaries, and implementation status. |
 | [DOCUMENTATION.md](DOCUMENTATION.md) | Required file headers, docstrings, comments, directory READMEs, and upkeep checklist. |
-| <code>docker-compose.yml</code> | Local data services plus the opt-in analytics scheduler. |
+| <code>docker-compose.yml</code> | Local data services plus opt-in <code>app</code> and <code>analytics</code> profiles. |
 | <code>init.sql</code> | First-boot PostgreSQL schema for prompts, experiments, redacted logs, candidates, and golden datasets. |
 
 Each major source and test directory has its own README. Start there before
@@ -232,7 +236,7 @@ dependencies. Their usage and expected assertions are documented in
 | Forensic tracing | Implemented as redacted OpenTelemetry JSON artifacts plus a SQLite failure registry. |
 | Production log mining | Implemented as an opt-in runtime publisher and daily HDBSCAN analytics worker. |
 | Fine-tuning | Placeholder directory only. |
-| Regression and documentation CI | Inert workflow stubs with no triggers or jobs. |
+| Regression and documentation CI | Model-regression CI is active; self-healing docs remains an inert workflow stub. |
 
 ## Operational and security notes
 
