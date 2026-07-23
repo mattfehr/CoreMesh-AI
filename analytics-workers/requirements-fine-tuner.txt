@@ -1,0 +1,19 @@
+# Module: pinned Phase 4.3 fine-tuning dependencies.
+# Role: extends the lightweight analytics worker with the isolated PEFT/QLoRA
+# training stack; it is not installed in the request-serving runtime or the
+# scheduled log-miner image.
+# Dependencies: Python 3.11+, a platform-appropriate PyTorch/CUDA wheel, and
+# NVIDIA CUDA for the default 4-bit training mode.
+# Side effects: installation downloads large native and ML packages.
+
+-r requirements.txt
+
+accelerate==1.14.0
+bitsandbytes==0.49.2
+datasets==5.0.0
+peft==0.19.1
+safetensors==0.8.0
+torch==2.13.0
+transformers==5.14.1
+trl==1.8.0
+wandb==0.28.1

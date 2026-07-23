@@ -12,6 +12,7 @@ __pycache__/
 *.pyd
 .Python
 .venv/
+.venv-*/
 venv/
 env/
 *.egg-info/
@@ -28,6 +29,7 @@ pytest-cache-files-*/
 htmlcov/
 .coverage
 *.coveragerc
+analytics-workers/artifacts/fine_tuner/
 
 # Go
 gateway-proxy/vendor/

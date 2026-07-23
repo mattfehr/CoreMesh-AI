@@ -19,7 +19,8 @@ CoreMesh currently has four runtime layers:
 The analytics scheduler is opt-in through its Compose profile. An
 <code>app</code> Compose profile boots the runtime and gateway for local/CI
 smoke tests. Model-regression GitHub Actions CI is live; self-healing docs and
-fine-tuning remain placeholders.
+prompt/flag control-plane packages remain placeholders. Fine-tuning is an
+implemented offline analytics boundary and does not join request serving.
 
 ## Gateway request flow
 
@@ -295,7 +296,10 @@ blueprint:
 
 - <code>gateway-proxy/internal/flags</code> and
   <code>gateway-proxy/internal/registry</code> contain no implementation.
-- <code>analytics-workers/src/fine_tuner</code> contains no training pipeline.
+- <code>analytics-workers/src/fine_tuner</code> reads one golden-data feature
+  scope, reserves a held-out split, trains PEFT LoRA/QLoRA adapters, logs W&B
+  and CUDA metrics, and exports adapter-only safetensors plus lineage. It does
+  not benchmark, promote, or deploy the resulting adapter.
 - <code>.github/workflows/self-healing-docs.yml</code> has empty events and jobs;
   model-regression CI is active.
 - there is no frontend or human-review application.

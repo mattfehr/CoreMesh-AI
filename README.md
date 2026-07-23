@@ -27,8 +27,8 @@ larger target system and should not be read as an implementation-status report.
   <code>app</code> profile boots runtime and gateway; an <code>analytics</code>
   profile adds the scheduled production log miner.
 - Failure forensics and the opt-in production log feedback loop are
-  implemented. Model-regression CI is live. Prompt/flag packages, fine-tuning,
-  and the self-healing-docs workflow remain documented placeholders.
+  implemented. Model-regression CI and feature-scoped PEFT/QLoRA training are
+  live. Prompt/flag packages remain documented placeholders.
 
 See [ARCHITECTURE.md](ARCHITECTURE.md) for detailed flows and state ownership.
 
@@ -76,7 +76,7 @@ still pass through admission control.
 | --- | --- |
 | [gateway-proxy](gateway-proxy/README.md) | Go edge admission, routing, caching, and upstream resilience. |
 | [services-runtime](services-runtime/README.md) | FastAPI ingestion service and intelligent-runtime libraries. |
-| [analytics-workers](analytics-workers/README.md) | Scheduled production log mining, model-regression evaluator, and fine-tuning placeholder. |
+| [analytics-workers](analytics-workers/README.md) | Scheduled log mining, model-regression evaluation, and PEFT/QLoRA adapter training. |
 | [.github](.github/README.md) | Repository automation; model-regression CI is active, self-healing docs remains inert. |
 | [ARCHITECTURE.md](ARCHITECTURE.md) | Cross-service flows, state, failure boundaries, and implementation status. |
 | [DOCUMENTATION.md](DOCUMENTATION.md) | Required file headers, docstrings, comments, directory READMEs, and upkeep checklist. |
@@ -235,7 +235,7 @@ dependencies. Their usage and expected assertions are documented in
 | Prompt registry and feature-flag packages | Database contracts or directories exist; application packages are placeholders. |
 | Forensic tracing | Implemented as redacted OpenTelemetry JSON artifacts plus a SQLite failure registry. |
 | Production log mining | Implemented as an opt-in runtime publisher and daily HDBSCAN analytics worker. |
-| Fine-tuning | Placeholder directory only. |
+| Fine-tuning | Golden-data loading, PEFT/QLoRA training, W&B metrics, checkpoints, adapter export, and lineage manifests. |
 | Regression and documentation CI | Model-regression CI is active; self-healing docs remains an inert workflow stub. |
 
 ## Operational and security notes

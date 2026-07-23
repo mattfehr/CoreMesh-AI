@@ -4,7 +4,8 @@
 
 This subtree owns CoreMesh jobs that learn from runtime outcomes without
 joining the request-serving path. Phase 4.1 implements the production log
-miner; the fine-tuning loop remains a documented placeholder.
+miner, Phase 4.2 provides model-regression evaluation, and Phase 4.3 converts
+reviewed feature-scoped golden data into auditable PEFT adapters.
 
 The log miner reads privacy-approved interaction records from PostgreSQL,
 embeds and clusters failure prompts, creates auditable evaluation candidates,
@@ -15,13 +16,17 @@ and promotes only high-confidence labels into <code>golden_datasets</code>.
 | Path | Responsibility | State |
 | --- | --- | --- |
 | <code>src/log_miner/</code> | HDBSCAN curation pipeline, providers, persistence, CLI, and scheduler. | Implemented |
-| <code>src/fine_tuner/</code> | PEFT/QLoRA training pipeline. | Placeholder |
+| <code>src/fine_tuner/</code> | PEFT/QLoRA training, W&B telemetry, adapter export, and lineage. | Implemented |
 | <code>migrations/</code> | Idempotent upgrades for existing PostgreSQL volumes. | Implemented |
 | <code>scripts/</code> | Deterministic manual PostgreSQL verification. | Implemented |
 | <code>tests/</code> | Offline tests with injected providers/repositories. | Implemented |
 
 Heavy clustering/model dependencies stay in this service and do not leak into
 <code>services-runtime</code>.
+
+The scheduled log miner keeps its lightweight `requirements.txt`. Fine-tuning
+uses `requirements-fine-tuner.txt` in a separate CUDA-capable environment so
+the default container and CI evaluator do not download the training stack.
 
 ## Data flow and trust boundary
 
@@ -67,6 +72,15 @@ The verification script injects synthetic failures, runs real clustering with
 deterministic providers, verifies promotion and rerun idempotency, and cleans
 up by default. Pass <code>--live-openai</code> only for an explicit paid smoke
 test.
+
+Phase 4.3 setup, credentials, test tiers, and artifacts are documented in
+[src/fine_tuner/README.md](src/fine_tuner/README.md). Training reads PostgreSQL
+but never writes to it:
+
+~~~powershell
+python -m pip install -r requirements-fine-tuner.txt
+python -m src.fine_tuner.train --config src/fine_tuner/config.example.json
+~~~
 
 ## Docker scheduling
 

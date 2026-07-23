@@ -1,0 +1,53 @@
+{
+  "schema_version": "coremesh-fine-tuning-config-v1",
+  "base_model": {
+    "model_id": "meta-llama/Meta-Llama-3-8B-Instruct",
+    "revision": "8afb486c1db24fe5011ec46dfbe5b5dccdb575c2"
+  },
+  "dataset": {
+    "feature_scope": "replace-with-one-reviewed-feature-scope",
+    "max_cases": null,
+    "seed": 42,
+    "train_ratio": 0.8,
+    "validation_ratio": 0.1,
+    "test_ratio": 0.1
+  },
+  "lora": {
+    "rank": 16,
+    "alpha": 32,
+    "dropout": 0.05,
+    "target_modules": [
+      "q_proj",
+      "v_proj"
+    ]
+  },
+  "quantization": {
+    "enabled": true,
+    "quant_type": "nf4",
+    "double_quant": true
+  },
+  "training": {
+    "num_train_epochs": 3.0,
+    "max_steps": -1,
+    "learning_rate": 0.0002,
+    "per_device_train_batch_size": 1,
+    "per_device_eval_batch_size": 1,
+    "gradient_accumulation_steps": 16,
+    "max_length": 512,
+    "logging_steps": 1,
+    "gradient_checkpointing": true,
+    "early_stopping_patience": 2,
+    "save_total_limit": 2
+  },
+  "wandb": {
+    "mode": "online",
+    "project": "coremesh-fine-tuning",
+    "entity": null,
+    "run_name": null,
+    "tags": [
+      "coremesh",
+      "qlora"
+    ]
+  },
+  "output_root": "artifacts/fine_tuner"
+}
