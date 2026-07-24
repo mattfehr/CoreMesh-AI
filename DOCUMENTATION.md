@@ -121,5 +121,16 @@ When behavior changes:
    cannot express.
 5. Run the formatter and tests named by the subsystem README.
 
-The two workflows under <code>.github/workflows</code> are currently inert
-roadmap placeholders, so this checklist is a maintainer responsibility today.
+The self-healing workflow assists this checklist when trusted pull requests
+change Python, Go, or Compose structure. It can update only one existing
+Markdown body at a time after deterministic eligibility checks, high-confidence
+typed assessment, and independent validation. Added or removed capabilities,
+ambiguous mappings, complex edits, and low-confidence findings remain
+human-review items.
+
+Automation does not replace ownership: review its marker-based PR comment,
+download <code>report.json</code> or <code>changes.patch</code> when needed,
+and confirm that architectural or cross-directory changes received the broader
+updates required above. The implementation, local dry-run command, provider
+data boundary, and offline test command live in
+[the self-healing package guide](.github/scripts/README.md).

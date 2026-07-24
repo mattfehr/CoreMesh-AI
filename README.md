@@ -27,8 +27,9 @@ larger target system and should not be read as an implementation-status report.
   <code>app</code> profile boots runtime and gateway; an <code>analytics</code>
   profile adds the scheduled production log miner.
 - Failure forensics and the opt-in production log feedback loop are
-  implemented. Model-regression CI and feature-scoped PEFT/QLoRA training are
-  live. Prompt/flag packages remain documented placeholders.
+  implemented. Model-regression CI, guarded self-healing documentation, and
+  feature-scoped PEFT/QLoRA training are live. Prompt/flag packages remain
+  documented placeholders.
 
 See [ARCHITECTURE.md](ARCHITECTURE.md) for detailed flows and state ownership.
 
@@ -77,7 +78,7 @@ still pass through admission control.
 | [gateway-proxy](gateway-proxy/README.md) | Go edge admission, routing, caching, and upstream resilience. |
 | [services-runtime](services-runtime/README.md) | FastAPI ingestion service and intelligent-runtime libraries. |
 | [analytics-workers](analytics-workers/README.md) | Scheduled log mining, model-regression evaluation, and PEFT/QLoRA adapter training. |
-| [.github](.github/README.md) | Repository automation; model-regression CI is active, self-healing docs remains inert. |
+| [.github](.github/README.md) | Repository automation for model-regression gating and guarded self-healing documentation. |
 | [ARCHITECTURE.md](ARCHITECTURE.md) | Cross-service flows, state, failure boundaries, and implementation status. |
 | [DOCUMENTATION.md](DOCUMENTATION.md) | Required file headers, docstrings, comments, directory READMEs, and upkeep checklist. |
 | <code>docker-compose.yml</code> | Local data services plus opt-in <code>app</code> and <code>analytics</code> profiles. |
@@ -97,7 +98,8 @@ and focused test commands.
 - Tesseract and Poppler for host-based document ingestion; the runtime
   Dockerfile installs the Linux packages
 - An OpenAI API key only for LLM extraction, vision fallback, embeddings,
-  OpenAI arbitration, semantic caching, or production log labeling
+  OpenAI arbitration, semantic caching, production log labeling, or trusted
+  self-healing documentation runs
 
 EasyOCR and cross-encoder models can download weights on first use. Plan for
 network access, startup time, and local cache space when invoking those paths.
@@ -216,6 +218,16 @@ python -m pytest -q
 python scripts/verify_log_miner.py
 ~~~
 
+Run the offline self-healing documentation suite from the repository root:
+
+~~~powershell
+$env:PYTHONPATH = ".github/scripts"
+python -B -m pytest -q -p no:cacheprovider .github/scripts/tests
+~~~
+
+The [self-healing package guide](.github/scripts/README.md) documents the CLI,
+configuration, artifacts, and restricted-Windows test setup.
+
 The gateway scripts exercise live routing and load behavior and require running
 dependencies. Their usage and expected assertions are documented in
 [gateway-proxy/scripts](gateway-proxy/scripts/README.md).
@@ -236,7 +248,7 @@ dependencies. Their usage and expected assertions are documented in
 | Forensic tracing | Implemented as redacted OpenTelemetry JSON artifacts plus a SQLite failure registry. |
 | Production log mining | Implemented as an opt-in runtime publisher and daily HDBSCAN analytics worker. |
 | Fine-tuning | Golden-data loading, PEFT/QLoRA training, W&B metrics, checkpoints, adapter export, and lineage manifests. |
-| Regression and documentation CI | Model-regression CI is active; self-healing docs remains an inert workflow stub. |
+| Regression and documentation CI | Model-regression CI is active; self-healing docs analyzes trusted structural PR changes and commits only independently validated bounded Markdown repairs. |
 
 ## Operational and security notes
 
@@ -253,6 +265,9 @@ This is a local-development stack, not a hardened deployment:
   used. Enabled interaction logging stores regex-redacted prompts for up to 30
   days; regex redaction is defense in depth and must match deployment policy.
 - Model/API calls can incur cost and transmit content to external providers.
+  Self-healing documentation sends selected structural deltas, current
+  Markdown blocks, and small neighboring style samples from trusted PRs to
+  OpenAI; forks and Dependabot never enter that trust boundary.
 
 Treat the documented headers and READMEs as part of each module contract. The
 maintenance rules in [DOCUMENTATION.md](DOCUMENTATION.md) explain what must be

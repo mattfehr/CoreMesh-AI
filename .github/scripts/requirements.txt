@@ -1,0 +1,11 @@
+# Module: pinned self-healing documentation automation dependencies.
+# Role: supplies workflow-local parsing, OpenAI, validation, and test packages.
+# Dependencies: Python 3.11 and binary wheels for Tree-sitter grammars.
+# Side effects: installation downloads packages into the selected environment.
+
+openai==2.44.0
+pydantic==2.11.7
+PyYAML==6.0.3
+tree-sitter==0.25.2
+tree-sitter-go==0.25.0
+pytest==8.3.4

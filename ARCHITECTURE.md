@@ -18,9 +18,10 @@ CoreMesh currently has four runtime layers:
 
 The analytics scheduler is opt-in through its Compose profile. An
 <code>app</code> Compose profile boots the runtime and gateway for local/CI
-smoke tests. Model-regression GitHub Actions CI is live; self-healing docs and
-prompt/flag control-plane packages remain placeholders. Fine-tuning is an
-implemented offline analytics boundary and does not join request serving.
+smoke tests. Model-regression CI and guarded self-healing documentation are
+live repository-automation boundaries. Prompt/flag control-plane packages
+remain placeholders. Fine-tuning is an implemented offline analytics boundary
+and does not join request serving.
 
 ## Gateway request flow
 
@@ -250,6 +251,45 @@ fingerprints and unique indexes make label retries idempotent. Source logs,
 orphaned cached embeddings, and pending review cases expire after 30 days;
 promoted golden cases have separate retention.
 
+## Repository documentation repair flow
+
+The self-healing workflow is repository automation, not a runtime service. A
+trusted pull request is checked out at its actual head with full Git history;
+fork and Dependabot requests stop in a no-checkout informational job.
+
+~~~text
+PR base/head Git objects
+    |
+    |-- Python ast / Tree-sitter Go / safe Compose YAML
+    |-- ignore comments, formatting, bodies, tests, and generated trees
+    v
+Normalized structural deltas
+    |
+    |-- exact identifier/route/config references
+    |-- top cosine-similar Markdown blocks
+    v
+Typed OpenAI passes
+    |-- staleness assessment
+    |-- body-only targeted rewrite
+    |-- independent correction validation
+    v
+Deterministic safety gates
+    |-- bounded modification only
+    |-- assessment and validation confidence >= 0.90
+    |-- unchanged path, heading tree, surrounding bytes, and newline style
+    v
+Reported tracked .md allowlist --> normal non-force PR-branch commit
+                     |
+                     +--> uncertain/complex findings remain advisory
+~~~
+
+The model has no tools and cannot select a path. Repository text is untrusted
+prompt data. The trusted job sends selected structural deltas, candidate
+Markdown bodies, and bounded neighboring style context to OpenAI, but persists
+only the link graph and decisions in workflow artifacts. Missing credentials,
+parse/provider failures, unsafe proposals, unexpected filesystem changes, and
+concurrent non-fast-forward pushes fail without bypassing protection.
+
 ## State and external side effects
 
 | State or dependency | Writer or caller | Lifetime and notes |
@@ -265,7 +305,7 @@ promoted golden cases have separate retention.
 | In-process BM25 corpus | RAG sparse index | Lost at process exit. |
 | Redis agent sessions/events | Orchestrator | TTL controlled by runtime settings. |
 | Chroma agent summaries | Orchestrator | Local persistent directory; deterministic interaction ID upserts. |
-| OpenAI APIs | Ingestion, RAG, arbitration, gateway cache, log miner | External transmission, latency, rate limits, and cost; the miner sends redacted prompts only. |
+| OpenAI APIs | Ingestion, RAG, arbitration, gateway cache, log miner, self-healing docs | External transmission, latency, rate limits, and cost; the miner sends redacted prompts, while trusted documentation runs send selected code deltas and Markdown context. |
 | Anthropic API / Ollama | Arbitration | External or local provider calls when arbitration runs. |
 | OCR/model caches | EasyOCR and sentence-transformers | May download and persist model weights outside the repository. |
 | Docker named volumes/network | Docker Compose | Created on <code>up</code>; data survives container recreation. |
@@ -300,8 +340,8 @@ blueprint:
   scope, reserves a held-out split, trains PEFT LoRA/QLoRA adapters, logs W&B
   and CUDA metrics, and exports adapter-only safetensors plus lineage. It does
   not benchmark, promote, or deploy the resulting adapter.
-- <code>.github/workflows/self-healing-docs.yml</code> has empty events and jobs;
-  model-regression CI is active.
+- repository automation includes active model-regression and guarded
+  self-healing-documentation workflows.
 - there is no frontend or human-review application.
 
 When one of these becomes real, update its README, file headers, this document,

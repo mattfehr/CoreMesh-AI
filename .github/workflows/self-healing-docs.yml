@@ -1,11 +1,254 @@
-# Module: placeholder documentation-synchronization workflow.
-# Role: reserves the planned CI entry point for detecting code/documentation
-# drift after structural source changes.
-# Dependencies: GitHub Actions; the future implementation will require AST
-# analysis, code-to-document mappings, and an authenticated update mechanism.
-# Side effects: none today. Empty triggers and jobs keep this workflow inert.
-#
-# Roadmap source: CoreMesh Phase 4.4 / AI Engineering Guide Project 4.
+# Module: guarded pull-request documentation synchronization.
+# Role: tests the repository-local analyzer, compares structural Git snapshots,
+# retrieves affected Markdown blocks, and applies only independently validated
+# bounded repairs to trusted same-repository pull-request branches.
+# Dependencies: Python 3.11, .github/scripts/requirements.txt, OPENAI_API_KEY,
+# the OpenAI Responses and Embeddings APIs, and the checked-out Git history.
+# Side effects: trusted runs may edit tracked Markdown, create one normal commit,
+# push it without force, update one marker-based PR comment, and upload reports.
+# Fork and Dependabot runs never check out code, receive secrets, call providers,
+# or obtain write permissions.
 name: self-healing-docs
-on: {}
-jobs: {}
+
+on:
+  pull_request:
+    types:
+      - opened
+      - synchronize
+      - reopened
+      - ready_for_review
+    paths:
+      - "**/*.py"
+      - "**/*.go"
+      - "compose.yml"
+      - "compose.yaml"
+      - "docker-compose.yml"
+      - "docker-compose.yaml"
+      - ".github/scripts/**"
+      - ".github/workflows/self-healing-docs.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: self-healing-docs-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  untrusted-pr-notice:
+    if: >-
+      github.event.pull_request.head.repo.full_name != github.repository ||
+      github.event.pull_request.user.login == 'dependabot[bot]' ||
+      github.actor == 'dependabot[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    permissions:
+      contents: read
+    steps:
+      - name: Explain the safe check
+        run: |
+          {
+            echo "## Self-Healing Documentation"
+            echo
+            echo "This pull request is from a fork or Dependabot."
+            echo "For safety, no code was checked out, no secret was exposed,"
+            echo "no model was called, and no branch update was attempted."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  heal-docs:
+    if: >-
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.event.pull_request.user.login != 'dependabot[bot]' &&
+      github.actor != 'dependabot[bot]' &&
+      github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write
+      pull-requests: write
+    env:
+      BASE_SHA: ${{ github.event.pull_request.base.sha }}
+      HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+      HEAD_REF: ${{ github.event.pull_request.head.ref }}
+      PR_NUMBER: ${{ github.event.pull_request.number }}
+      PYTHONPATH: ${{ github.workspace }}/.github/scripts
+      PYTHONDONTWRITEBYTECODE: "1"
+      REPORT_DIR: ${{ runner.temp }}/self-healing-docs
+      DOC_HEALING_MODEL: gpt-5.6-luna
+      DOC_HEALING_EMBEDDING_MODEL: text-embedding-3-small
+      DOC_HEALING_REASONING_EFFORT: low
+      DOC_HEALING_SIMILARITY_THRESHOLD: "0.45"
+      DOC_HEALING_CONFIDENCE_THRESHOLD: "0.90"
+      DOC_HEALING_TOP_K: "5"
+    steps:
+      - name: Initialize always-uploaded diagnostics
+        shell: bash
+        run: |
+          mkdir -p "$REPORT_DIR"
+          printf '%s\n' \
+            '{"status":"not_started","errors":[{"type":"Workflow","message":"The analyzer did not finish."}]}' \
+            > "$REPORT_DIR/report.json"
+          printf '%s\n' \
+            '## Self-Healing Documentation' \
+            '' \
+            'The analyzer did not finish. Inspect the workflow log.' \
+            > "$REPORT_DIR/summary.md"
+          : > "$REPORT_DIR/changes.patch"
+          : > "$REPORT_DIR/applied-paths.txt"
+
+      - name: Check out the actual PR branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.ref }}
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: .github/scripts/requirements.txt
+
+      - name: Install pinned dependencies
+        run: python -m pip install --requirement .github/scripts/requirements.txt
+
+      - name: Run offline unit and integration tests
+        run: >-
+          python -B -m pytest -q -p no:cacheprovider
+          --basetemp "${RUNNER_TEMP}/self-healing-docs-pytest"
+          .github/scripts/tests
+
+      - name: Analyze and repair documentation
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: >-
+          python -B -m self_healing_docs
+          --repo-root .
+          --base-sha "$BASE_SHA"
+          --head-sha "$HEAD_SHA"
+          --output-dir "$REPORT_DIR"
+          --apply
+
+      - name: Validate, commit, and push approved Markdown
+        id: commit
+        shell: bash
+        run: |
+          set -euo pipefail
+          paths_file="$REPORT_DIR/applied-paths.txt"
+          mapfile -t paths < "$paths_file"
+          if (( ${#paths[@]} == 0 )); then
+            echo "created=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          expected="$RUNNER_TEMP/self-healing-expected-paths.txt"
+          actual="$RUNNER_TEMP/self-healing-actual-paths.txt"
+          staged="$RUNNER_TEMP/self-healing-staged-paths.txt"
+          LC_ALL=C sort "$paths_file" > "$expected"
+          git diff --name-only --diff-filter=ACMR -- | LC_ALL=C sort > "$actual"
+          diff --unified "$expected" "$actual"
+
+          for path in "${paths[@]}"; do
+            if [[ -z "$path" || "$path" != *.md || "$path" == /* ||
+                  "$path" == ../* || "$path" == */../* || "$path" == *\\* ]]; then
+              echo "Unsafe reported Markdown path: $path" >&2
+              exit 1
+            fi
+            git ls-files --error-unmatch -- "$path" > /dev/null
+            git add -- "$path"
+          done
+
+          git diff --cached --check
+          git diff --cached --name-only --diff-filter=ACMR -- |
+            LC_ALL=C sort > "$staged"
+          diff --unified "$expected" "$staged"
+          if git diff --cached --quiet; then
+            echo "The report listed paths but no staged diff exists." >&2
+            exit 1
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "docs: synchronize documentation for PR #${PR_NUMBER}"
+          git push origin "HEAD:${HEAD_REF}"
+          echo "created=true" >> "$GITHUB_OUTPUT"
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Add the analyzer summary
+        if: always()
+        shell: bash
+        run: |
+          if [[ -f "$REPORT_DIR/summary.md" ]]; then
+            cat "$REPORT_DIR/summary.md" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "Self-healing documentation did not produce a summary." \
+              >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Upload self-healing documentation artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: self-healing-docs-pr-${{ github.event.pull_request.number }}
+          path: |
+            ${{ runner.temp }}/self-healing-docs/report.json
+            ${{ runner.temp }}/self-healing-docs/summary.md
+            ${{ runner.temp }}/self-healing-docs/changes.patch
+            ${{ runner.temp }}/self-healing-docs/applied-paths.txt
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Update the pull-request report
+        if: always()
+        uses: actions/github-script@v7
+        env:
+          COMMIT_CREATED: ${{ steps.commit.outputs.created }}
+          COMMIT_SHA: ${{ steps.commit.outputs.sha }}
+          JOB_STATUS: ${{ job.status }}
+        with:
+          script: |
+            const fs = require("fs");
+            const marker = "<!-- coremesh-self-healing-docs -->";
+            const summaryPath = process.env.REPORT_DIR + "/summary.md";
+            let summary = "## Self-Healing Documentation\n\nThe workflow did not produce a summary.";
+            if (fs.existsSync(summaryPath)) {
+              summary = fs.readFileSync(summaryPath, "utf8").trim();
+            }
+
+            const notes = [];
+            if (process.env.COMMIT_CREATED === "true" && process.env.COMMIT_SHA) {
+              const sha = process.env.COMMIT_SHA;
+              const url = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/commit/${sha}`;
+              notes.push(`Approved repairs were pushed in [\`${sha.slice(0, 12)}\`](${url}).`);
+            }
+            if (process.env.JOB_STATUS !== "success") {
+              notes.push("The workflow failed; no branch update should be assumed successful.");
+            }
+            const body = [marker, summary, ...notes].filter(Boolean).join("\n\n");
+
+            const comments = await github.paginate(github.rest.issues.listComments, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              per_page: 100,
+            });
+            const previous = comments.find(
+              (comment) =>
+                comment.user?.login === "github-actions[bot]" &&
+                comment.body?.includes(marker),
+            );
+            if (previous) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: previous.id,
+                body,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body,
+              });
+            }

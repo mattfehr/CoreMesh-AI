@@ -26,6 +26,7 @@ pytest-cache-files-*/
 .ruff_cache/
 .chroma/
 .traces/
+.self-healing-docs/
 htmlcov/
 .coverage
 *.coveragerc
