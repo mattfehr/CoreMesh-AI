@@ -1,9 +1,11 @@
 # Cost autopilot
 
 Autopilot is the outer request middleware. It recognizes JSON POST payloads
-with a prompt or messages, computes a deterministic complexity classification,
-rewrites the model field, and exposes the decision through request/response
-headers. Non-JSON, non-POST, empty, malformed, or promptless requests pass
+with a prompt, input, messages, or unified-execution `payload_query`, computes
+a deterministic complexity classification, and exposes the decision through
+request/response headers. OpenAI-shaped requests have their model field
+rewritten. `/v1/execute` is classify-only so its strict runtime payload remains
+unchanged. Non-JSON, non-POST, empty, malformed, or promptless requests pass
 through unchanged.
 
 ## Classification

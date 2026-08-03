@@ -1,29 +1,46 @@
 """CoreMesh AI — Python Runtime Service.
 
 System role:
-    Owns the public runtime HTTP boundary. Liveness, document ingestion, and a
-    minimal OpenAI-shaped chat completions path are mounted today; RAG, SQL,
-    orchestration, and arbitration remain Python library APIs.
+    Owns the public runtime HTTP boundary: liveness, ingestion, minimal chat,
+    restricted unified RAG/SQL/agent execution, and read-only forensic traces.
 Dependencies:
-    FastAPI handles HTTP/multipart contracts, ingestion owns blocking document
-    work, chat completions may call OpenAI, and structlog emits request
-    lifecycle metadata.
+    FastAPI handles HTTP/multipart contracts; agent and tracing packages own
+    execution/forensics; ingestion and chat own their domain work; structlog
+    emits request lifecycle metadata.
 Side effects:
     Import configures structlog and constructs the FastAPI app. Requests read
-    uploads into memory, run CPU/native work in a thread, and may call OpenAI.
+    uploads, run blocking work in threads, call configured state/model systems,
+    and create redacted forensic artifacts.
 
 Entry point for uvicorn: ``src.main:app``
 """
 import asyncio
 import logging
+import re
+import sqlite3
+import threading
+from enum import Enum
 
 import structlog
-from fastapi import FastAPI, File, HTTPException, UploadFile, status
-from pydantic import ValidationError
+from fastapi import Depends, FastAPI, File, HTTPException, Query, UploadFile, status
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
+from src.agents.orchestrator import (
+    ExecutionRequestPayload,
+    OrchestrationResult,
+    OrchestratorDependencies,
+    run_orchestration,
+)
 from src.chat.completions import ChatCompletionRequest, build_chat_completion
 from src.ingestion.processor import process_document
 from src.ingestion.schemas import IngestResponse
+from src.tracing.forensics import (
+    FailureCategory,
+    FailureTrigger,
+    ForensicTraceArtifact,
+    ForensicTraceSummary,
+    ForensicsTracer,
+)
 
 structlog.configure(
     wrapper_class=structlog.make_filtering_bound_logger(logging.INFO),
@@ -38,6 +55,88 @@ app = FastAPI(
     ),
     version="0.1.0",
 )
+
+
+class ExecutionFeatureScope(str, Enum):
+    """Browser-safe execution modes exposed by the unified runtime route."""
+
+    RAG = "rag"
+    TEXT_TO_SQL = "text_to_sql"
+    AGENT_ORCHESTRATOR = "agent_orchestrator"
+
+
+class ExecutionSessionContext(BaseModel):
+    """Whitelisted session controls accepted from an untrusted HTTP client."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    session_id: str | None = Field(default=None, min_length=1, max_length=128)
+    rag_top_k: int | None = Field(default=None, ge=1, le=20)
+
+    @field_validator("session_id")
+    @classmethod
+    def normalize_session_id(cls, value: str | None) -> str | None:
+        """Trim a provided session ID and reject whitespace-only values."""
+
+        if value is None:
+            return None
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("session_id must not be blank")
+        return normalized
+
+
+class ExecutionAPIRequest(BaseModel):
+    """Public unified execution payload with a deliberately narrow context."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    user_id: str = Field(min_length=1, max_length=128)
+    feature_scope: ExecutionFeatureScope
+    payload_query: str = Field(min_length=1, max_length=16_384)
+    session_context: ExecutionSessionContext | None = None
+
+    @field_validator("user_id", "payload_query")
+    @classmethod
+    def normalize_required_text(cls, value: str) -> str:
+        """Trim required text fields and reject whitespace-only values."""
+
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("value must not be blank")
+        return normalized
+
+
+class TraceListResponse(BaseModel):
+    """Paginated trace-registry response for the forensic explorer."""
+
+    items: list[ForensicTraceSummary]
+    total: int
+    limit: int
+    offset: int
+
+
+_DEPENDENCY_LOCK = threading.Lock()
+
+
+def get_orchestrator_dependencies() -> OrchestratorDependencies:
+    """Return one lazy application-scoped orchestration dependency graph."""
+
+    dependencies = getattr(app.state, "orchestrator_dependencies", None)
+    if dependencies is None:
+        with _DEPENDENCY_LOCK:
+            dependencies = getattr(app.state, "orchestrator_dependencies", None)
+            if dependencies is None:
+                dependencies = OrchestratorDependencies()
+                app.state.orchestrator_dependencies = dependencies
+    return dependencies
+
+
+def get_runtime_forensics() -> ForensicsTracer:
+    """Return the tracer used by HTTP-triggered orchestrations."""
+
+    return get_orchestrator_dependencies().forensics
+
 
 _ALLOWED_CONTENT_TYPES = {
     "application/pdf",
@@ -57,6 +156,116 @@ _ALLOWED_CONTENT_TYPES = {
 async def health() -> dict:
     """Return process liveness without contacting infrastructure providers."""
     return {"status": "ok", "service": "coremesh-runtime"}
+
+
+# ---------------------------------------------------------------------------
+# Unified execution
+# ---------------------------------------------------------------------------
+
+@app.post(
+    "/v1/execute",
+    response_model=OrchestrationResult,
+    tags=["execution"],
+    summary="Execute a RAG, text-to-SQL, or agent-orchestrator task.",
+)
+async def execute(
+    payload: ExecutionAPIRequest,
+    dependencies: OrchestratorDependencies = Depends(get_orchestrator_dependencies),
+) -> OrchestrationResult:
+    """Run synchronous orchestration off the event loop with HTTP-safe inputs."""
+
+    context = (
+        payload.session_context.model_dump(exclude_none=True)
+        if payload.session_context is not None
+        else None
+    )
+    request = ExecutionRequestPayload(
+        user_id=payload.user_id,
+        feature_scope=payload.feature_scope.value,
+        payload_query=payload.payload_query,
+        session_context=context,
+    )
+    try:
+        return await asyncio.to_thread(run_orchestration, request, dependencies)
+    except Exception as exc:
+        log.error("execution.error", error_type=type(exc).__name__)
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="CoreMesh execution failed.",
+        ) from exc
+
+
+# ---------------------------------------------------------------------------
+# Read-only forensic trace explorer
+# ---------------------------------------------------------------------------
+
+_TRACE_ID_PATTERN = re.compile(r"^[0-9a-f]{32}$")
+
+
+@app.get(
+    "/v1/traces",
+    response_model=TraceListResponse,
+    tags=["forensics"],
+    summary="List redacted forensic trace summaries.",
+)
+async def list_traces(
+    limit: int = Query(default=50, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
+    trace_status: str | None = Query(default=None, alias="status", max_length=64),
+    trigger: FailureTrigger | None = Query(default=None),
+    failure_category: FailureCategory | None = Query(default=None),
+    forensics: ForensicsTracer = Depends(get_runtime_forensics),
+) -> TraceListResponse:
+    """Query the SQLite trace registry without returning artifact paths."""
+
+    try:
+        items, total = await asyncio.to_thread(
+            forensics.list_traces,
+            limit=limit,
+            offset=offset,
+            status=trace_status,
+            trigger=trigger,
+            failure_category=failure_category,
+        )
+    except (OSError, sqlite3.Error, ValueError) as exc:
+        log.error("forensics.list.error", error_type=type(exc).__name__)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Forensic trace registry is unavailable.",
+        ) from exc
+    return TraceListResponse(items=items, total=total, limit=limit, offset=offset)
+
+
+@app.get(
+    "/v1/traces/{trace_id}",
+    response_model=ForensicTraceArtifact,
+    tags=["forensics"],
+    summary="Read one redacted forensic trace artifact.",
+)
+async def get_trace(
+    trace_id: str,
+    forensics: ForensicsTracer = Depends(get_runtime_forensics),
+) -> ForensicTraceArtifact:
+    """Load one validated trace ID without allowing filesystem traversal."""
+
+    if not _TRACE_ID_PATTERN.fullmatch(trace_id):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="trace_id must be 32 lowercase hexadecimal characters.",
+        )
+    try:
+        return await asyncio.to_thread(forensics.get_trace, trace_id)
+    except FileNotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Forensic trace not found.",
+        ) from exc
+    except (OSError, UnicodeError, ValidationError) as exc:
+        log.error("forensics.read.error", error_type=type(exc).__name__)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Forensic trace artifact is unavailable.",
+        ) from exc
 
 
 # ---------------------------------------------------------------------------
@@ -150,7 +359,7 @@ async def ingest_document(file: UploadFile = File(...)) -> IngestResponse:
     except Exception as exc:
         log.error("ingest.error", filename=file.filename, error=str(exc))
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail=f"Document processing failed: {exc}",
         ) from exc
 

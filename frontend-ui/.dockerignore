@@ -1,0 +1,10 @@
+# Module: frontend container build exclusions.
+# Role: keeps local dependencies, output, and test artifacts out of Docker context.
+# Dependencies: Docker build context rules.
+# Side effects: changes which local files are uploaded to the Docker daemon.
+node_modules
+dist
+coverage
+playwright-report
+test-results
+.env

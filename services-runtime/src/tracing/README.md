@@ -26,6 +26,13 @@ list, nested visualization tree, trigger, metrics, and optional
 category, and artifact path. Negative feedback reanalyzes and upserts the row
 when an artifact is available.
 
+The runtime exposes newest-first summaries at <code>GET /v1/traces</code> and
+one artifact at <code>GET /v1/traces/{trace_id}</code>. Summary filters cover
+status, trigger, and diagnosed category with bounded limit/offset pagination.
+Neither response exposes registry artifact paths, session hashes, prompts, or
+responses. Trace IDs must be exactly 32 lowercase hexadecimal characters, so
+the detail route cannot become a filesystem traversal boundary.
+
 ## Backward analysis
 
 Execution errors and non-clean arbitration verdicts are analyzed
@@ -45,9 +52,11 @@ Prompt, document, response, SQL, Redis-key, user-ID, feedback-reason, and raw
 exception content are replaced by hashes and lengths. Categorical identifiers,
 counts, timings, and quality metrics are allowlisted and bounded.
 
-Tracing is fail-open: exporter, storage, registry, and judge failures cannot
-change an orchestration result. Forensic artifacts remain until an operator
-removes them.
+Tracing is fail-open for orchestration: exporter, storage, registry, and judge
+failures cannot change an orchestration result. Forensic artifacts remain
+until an operator removes them. Read-only HTTP listing/lookup reports
+unavailable storage with a sanitized 503 instead of returning partial private
+state.
 
 A separate production-feedback sink is disabled by default. When enabled, it
 stores only a regex-redacted prompt, prompt fingerprint, trace/feature scope,

@@ -7,6 +7,8 @@ share an entry.
 ## Eligibility and scope
 
 Only JSON POST bodies with extractable prompt/message text are eligible.
+Unified <code>/v1/execute</code> calls are always bypassed because they create
+trace/memory side effects and may depend on changing corpus/database state.
 Autopilot can explicitly bypass the cache for complex requests. Scope hashes
 method, escaped path, routed model, system/developer content, all other request
 parameters, and the streaming flag. Prompt similarity is evaluated only within
@@ -23,7 +25,9 @@ hit count best-effort. A miss streams writes to the caller while capturing the
 body and stores only 2xx results. Errors from embeddings, index setup, or lookup
 produce a bypass; storage/counter errors do not change the response.
 
-The cache favors availability, but cached bodies are still model output and may
+Each path writes <code>X-CoreMesh-Cache</code> as hit, miss, or bypass when
+this middleware is enabled; the outer gateway uses that header for content-free
+process counters. The cache favors availability, but cached bodies are still model output and may
 contain sensitive content. TTL is not an authorization boundary. Preserve
 scope hashing when adding fields, and never remove a request parameter from the
 scope without proving that it cannot affect output.

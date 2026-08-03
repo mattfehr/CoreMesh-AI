@@ -2,7 +2,7 @@
 # Role: supplies PostgreSQL metadata, Redis rate-limit/cache state, Qdrant
 # vectors, optional app services, and an opt-in scheduled analytics worker.
 # Dependencies: Docker Compose, referenced images, init.sql, and the analytics
-# worker/runtime/gateway build contexts when their profiles are enabled.
+# worker/runtime/gateway/frontend build contexts when profiles are enabled.
 # Side effects: creates named persistent volumes, a bridge network, containers,
 # and host port bindings. PostgreSQL runs init.sql only for a new data volume.
 
@@ -14,6 +14,7 @@ volumes:
   postgres-data:
   redis-data:
   qdrant-data:
+  runtime-traces:
 
 services:
   # -------------------------------------------------------------------------
@@ -60,8 +61,12 @@ services:
       PRODUCTION_INTERACTION_LOGGING_ENABLED: ${PRODUCTION_INTERACTION_LOGGING_ENABLED:-false}
       REDIS_URL: ${RUNTIME_REDIS_URL:-redis://redis:6379}
       QDRANT_URL: ${RUNTIME_QDRANT_URL:-http://qdrant:6333}
+      FORENSICS_TRACE_DIRECTORY: /app/.traces
+      FORENSICS_REGISTRY_PATH: /app/.traces/registry.sqlite3
     ports:
       - "8000:8000"
+    volumes:
+      - runtime-traces:/app/.traces
     depends_on:
       postgres:
         condition: service_healthy
@@ -98,6 +103,7 @@ services:
       SEMANTIC_CACHE_ENABLED: ${SEMANTIC_CACHE_ENABLED:-false}
       RATE_LIMIT_CAPACITY: ${RATE_LIMIT_CAPACITY:-100}
       RATE_LIMIT_REFILL_PER_SECOND: ${RATE_LIMIT_REFILL_PER_SECOND:-20}
+      GATEWAY_ALLOWED_ORIGINS: ${GATEWAY_ALLOWED_ORIGINS:-http://localhost:3000,http://localhost:5173}
     ports:
       - "8080:8080"
     depends_on:
@@ -115,6 +121,31 @@ services:
       timeout: 5s
       retries: 12
       start_period: 10s
+
+  # -------------------------------------------------------------------------
+  # React dashboard - app-profile execution, observability, and trace viewer
+  # -------------------------------------------------------------------------
+  frontend:
+    profiles: ["app"]
+    build:
+      context: "${COREMESH_FRONTEND_CONTEXT:-./frontend-ui}"
+      args:
+        VITE_GATEWAY_BASE_URL: ${VITE_GATEWAY_BASE_URL:-http://localhost:8080}
+    container_name: coremesh-frontend
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    depends_on:
+      gateway:
+        condition: service_healthy
+    networks:
+      - coremesh-net
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:3000/ >/dev/null 2>&1 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 5s
 
   # -------------------------------------------------------------------------
   # Phase 4.1 log miner — opt-in daily production-failure curation

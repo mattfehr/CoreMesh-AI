@@ -244,6 +244,13 @@ func (c *SemanticCache) Middleware(next http.Handler) http.Handler {
 	}
 
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Unified executions create traces/memory and may read changing SQL/RAG
+		// state, so they must always reach the runtime.
+		if r.URL.Path == "/v1/execute" {
+			w.Header().Set(HeaderCache, cacheHeaderBypass)
+			next.ServeHTTP(w, r)
+			return
+		}
 		if strings.EqualFold(strings.TrimSpace(r.Header.Get(HeaderCachePolicy)), cacheHeaderBypass) {
 			w.Header().Set(HeaderCache, cacheHeaderBypass)
 			next.ServeHTTP(w, r)

@@ -1,7 +1,8 @@
 // Package autopilot contains request-time model routing and experiment splits.
 //
-// System role: it is the gateway's outer middleware, rewriting eligible JSON
-// LLM requests before semantic-cache lookup and upstream admission.
+// System role: it is the gateway's outer middleware, classifying eligible JSON
+// requests before semantic-cache lookup and upstream admission. OpenAI-shaped
+// payloads are rewritten; unified execution payloads remain unchanged.
 // Dependencies: net/http and JSON implement classification; an optional pgx
 // store reads feature_experiments from PostgreSQL.
 // Side effects: middleware buffers/replaces request bodies and adds routing
@@ -59,6 +60,7 @@ const (
 	HeaderAutopilotReason    = "X-CoreMesh-Autopilot-Reason"
 	HeaderExperimentError    = "X-CoreMesh-Experiment-Error"
 	anonymousRoutingIdentity = "anonymous"
+	unifiedExecutionPath     = "/v1/execute"
 )
 
 // Config controls request classification and experiment-split behavior.
@@ -257,7 +259,9 @@ func NewRouter(cfg Config, store ExperimentStore) (*Router, error) {
 	return &Router{cfg: cfg, store: store}, nil
 }
 
-// Middleware rewrites compatible JSON LLM requests before they reach cache/proxy layers.
+// Middleware classifies compatible JSON requests before they reach cache/proxy layers.
+// OpenAI-shaped requests also have their model rewritten; unified executions
+// retain their strict runtime payload and receive decision metadata only.
 func (r *Router) Middleware(next http.Handler) http.Handler {
 	if r == nil || !r.cfg.Enabled {
 		return next
@@ -313,6 +317,11 @@ func (r *Router) routeRequest(req *http.Request) (*http.Request, Decision, bool,
 
 	classification := ClassifyFields(fields)
 	decision := r.decision(req.Context(), req, classification)
+	if req.URL.Path == unifiedExecutionPath {
+		routed := req.Clone(req.Context())
+		restoreRequestBody(routed, body)
+		return routed, decision, true, nil
+	}
 	routedBody, err := rewriteModel(fields, decision.Model)
 	if err != nil {
 		restoreRequestBody(req, body)
@@ -496,7 +505,7 @@ func rewriteModel(fields map[string]json.RawMessage, model string) ([]byte, erro
 
 func extractPromptText(fields map[string]json.RawMessage) string {
 	var parts []string
-	for _, key := range []string{"prompt", "input"} {
+	for _, key := range []string{"prompt", "input", "payload_query"} {
 		if raw, ok := fields[key]; ok {
 			var value interface{}
 			if err := json.Unmarshal(raw, &value); err == nil {

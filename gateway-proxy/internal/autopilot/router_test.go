@@ -125,6 +125,42 @@ func TestMiddlewareExperimentalUsesClassifierAndRewritesModel(t *testing.T) {
 	}
 }
 
+func TestMiddlewareClassifiesUnifiedExecutionWithoutRewritingBody(t *testing.T) {
+	router := newTestRouter(t, nil)
+	handler := router.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var payload map[string]interface{}
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatalf("decode body: %v", err)
+		}
+		if _, exists := payload["model"]; exists {
+			t.Fatal("unified execution payload must not receive a model field")
+		}
+		if got := payload["payload_query"]; got != "Find the fallback policy" {
+			t.Fatalf("payload_query = %v, want original value", got)
+		}
+		fmt.Fprint(w, "ok")
+	}))
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(
+		http.MethodPost,
+		unifiedExecutionPath,
+		strings.NewReader(`{"user_id":"demo","feature_scope":"rag","payload_query":"Find the fallback policy"}`),
+	)
+	req.Header.Set("Content-Type", "application/json")
+	handler.ServeHTTP(rec, req)
+
+	if got := rec.Header().Get(HeaderAutopilotTier); got != Tier1 {
+		t.Fatalf("%s = %q, want %q", HeaderAutopilotTier, got, Tier1)
+	}
+	if got := rec.Header().Get(HeaderRoutedModel); got != "tier-one" {
+		t.Fatalf("%s = %q, want tier-one", HeaderRoutedModel, got)
+	}
+	if rec.Body.String() != "ok" {
+		t.Fatalf("downstream response = %q, want ok", rec.Body.String())
+	}
+}
+
 func TestMiddlewareBaselineForcesTier3AtZeroPercent(t *testing.T) {
 	router := newTestRouter(t, &fakeExperimentStore{
 		found: true,

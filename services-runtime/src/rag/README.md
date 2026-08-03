@@ -1,8 +1,10 @@
 # Hybrid retrieval
 
-This package is a library-only evidence retriever used directly by Python
-callers and the RAG agent specialist. It does not ingest arbitrary documents,
-generate a final answer, or expose HTTP endpoints.
+This package is an evidence-retrieval library used by trusted Python callers
+and the RAG agent specialist. The runtime's restricted
+<code>/v1/execute</code> RAG mode invokes that specialist; this package does
+not mount its own endpoint, ingest arbitrary documents, or generate a final
+answer.
 
 ## Indexing
 

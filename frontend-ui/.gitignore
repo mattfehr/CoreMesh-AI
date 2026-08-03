@@ -1,0 +1,11 @@
+# Module: frontend-local generated artifact exclusions.
+# Role: keeps dependencies, builds, test output, and local environment values
+# out of source control.
+# Dependencies: interpreted by Git.
+# Side effects: matching untracked files are hidden from normal Git status.
+node_modules/
+dist/
+coverage/
+playwright-report/
+test-results/
+.env

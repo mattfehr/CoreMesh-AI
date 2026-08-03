@@ -42,6 +42,8 @@ const (
 	defaultCircuitOpenDuration  = 30 * time.Second
 	defaultHalfOpenProbeTimeout = 30 * time.Second
 	defaultRedisConnectTimeout  = 5 * time.Second
+	defaultAllowedOriginUI      = "http://localhost:3000"
+	defaultAllowedOriginVite    = "http://localhost:5173"
 	rateLimitHeaderRemaining    = "x-ratelimit-remaining"
 	coremeshRouteHeader         = "x-coremesh-route"
 	coremeshCircuitStateHeader  = "x-coremesh-circuit-state"
@@ -50,8 +52,7 @@ const (
 	anonymousRateLimitIdentity  = "anonymous"
 )
 
-// Config controls the gateway reverse proxy, Redis token bucket, and circuit
-// breaker behavior.
+// Config controls CORS, reverse proxying, Redis admission, and circuit behavior.
 type Config struct {
 	PrimaryURL               string
 	FallbackURL              string
@@ -61,6 +62,7 @@ type Config struct {
 	CircuitFailureThreshold  int
 	CircuitFailureWindow     time.Duration
 	CircuitOpenDuration      time.Duration
+	AllowedOrigins           []string
 }
 
 // DefaultConfig returns local-development defaults for the gateway.
@@ -74,6 +76,10 @@ func DefaultConfig() Config {
 		CircuitFailureThreshold:  defaultCircuitThreshold,
 		CircuitFailureWindow:     defaultCircuitFailureWindow,
 		CircuitOpenDuration:      defaultCircuitOpenDuration,
+		AllowedOrigins: []string{
+			defaultAllowedOriginUI,
+			defaultAllowedOriginVite,
+		},
 	}
 }
 
@@ -101,6 +107,7 @@ func ConfigFromEnv() (Config, error) {
 	if cfg.CircuitOpenDuration, err = envDuration("CIRCUIT_OPEN_DURATION", cfg.CircuitOpenDuration); err != nil {
 		return Config{}, err
 	}
+	cfg.AllowedOrigins = envCSV("GATEWAY_ALLOWED_ORIGINS", cfg.AllowedOrigins)
 
 	cfg = cfg.withDefaults()
 	if err := cfg.Validate(); err != nil {
@@ -132,6 +139,17 @@ func (c Config) Validate() error {
 	if _, err := url.ParseRequestURI(c.FallbackURL); err != nil {
 		return fmt.Errorf("invalid GATEWAY_FALLBACK_URL: %w", err)
 	}
+	for _, origin := range c.AllowedOrigins {
+		parsed, err := url.ParseRequestURI(origin)
+		if err != nil || parsed.Scheme == "" || parsed.Host == "" ||
+			parsed.User != nil || parsed.Path != "" ||
+			parsed.RawQuery != "" || parsed.Fragment != "" {
+			return fmt.Errorf("invalid GATEWAY_ALLOWED_ORIGINS entry %q", origin)
+		}
+		if parsed.Scheme != "http" && parsed.Scheme != "https" {
+			return fmt.Errorf("GATEWAY_ALLOWED_ORIGINS entry %q must use http or https", origin)
+		}
+	}
 	return nil
 }
 
@@ -160,6 +178,9 @@ func (c Config) withDefaults() Config {
 	}
 	if c.CircuitOpenDuration == 0 {
 		c.CircuitOpenDuration = defaults.CircuitOpenDuration
+	}
+	if len(c.AllowedOrigins) == 0 {
+		c.AllowedOrigins = append([]string(nil), defaults.AllowedOrigins...)
 	}
 	return c
 }
@@ -370,7 +391,9 @@ func NewHandler(ctx context.Context, cfg Config) (http.Handler, error) {
 		handler = router.Middleware(handler)
 	}
 
-	return handler, nil
+	metrics := newGatewayMetrics(cacheCfg.Enabled)
+	handler = metrics.Middleware(handler)
+	return newApplicationHandler(handler, proxy, cfg, metrics), nil
 }
 
 // NewProxy builds a gateway proxy with an injected limiter, which keeps tests
@@ -784,4 +807,25 @@ func envDuration(name string, fallback time.Duration) (time.Duration, error) {
 		return 0, fmt.Errorf("invalid %s: %w", name, err)
 	}
 	return value, nil
+}
+
+func envCSV(name string, fallback []string) []string {
+	raw := strings.TrimSpace(os.Getenv(name))
+	if raw == "" {
+		return append([]string(nil), fallback...)
+	}
+	values := make([]string, 0)
+	seen := make(map[string]struct{})
+	for _, item := range strings.Split(raw, ",") {
+		value := strings.TrimSpace(item)
+		if value == "" {
+			continue
+		}
+		if _, exists := seen[value]; exists {
+			continue
+		}
+		seen[value] = struct{}{}
+		values = append(values, value)
+	}
+	return values
 }

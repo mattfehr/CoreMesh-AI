@@ -144,6 +144,19 @@ class ForensicTraceArtifact(BaseModel):
     feedback: dict[str, Any] | None = None
 
 
+class ForensicTraceSummary(BaseModel):
+    """Privacy-safe registry row returned by the trace-list HTTP boundary."""
+
+    trace_id: str
+    created_at: str
+    status: str
+    final_confidence: float | None = None
+    trigger: FailureTrigger | None = None
+    root_cause_span_id: str | None = None
+    root_cause_step_id: str | None = None
+    failure_category: FailureCategory | None = None
+
+
 class StepQualityJudge(Protocol):
     """Optional fallback judge; input contains sanitized span metadata only."""
 
@@ -161,12 +174,16 @@ class StepQualityJudge(Protocol):
 _SENSITIVE_LEAF_SEGMENTS = frozenset(
     {
         "authorization",
+        "body",
+        "content",
         "document",
         "input",
         "message",
         "output",
         "password",
         "prompt",
+        "query",
+        "response",
         "secret",
         "sql",
         "stacktrace",
@@ -787,6 +804,73 @@ class ForensicsTracer:
         path = self.trace_directory / f"{trace_id}.json"
         return ForensicTraceArtifact.model_validate_json(path.read_text(encoding="utf-8"))
 
+    def list_traces(
+        self,
+        *,
+        limit: int = 50,
+        offset: int = 0,
+        status: str | None = None,
+        trigger: FailureTrigger | None = None,
+        failure_category: FailureCategory | None = None,
+    ) -> tuple[list[ForensicTraceSummary], int]:
+        """Return newest-first registry summaries without artifact paths.
+
+        A missing registry or an initialized database without the registry table
+        represents an empty trace collection. Other SQLite failures propagate so
+        the HTTP boundary can report that forensics is unavailable.
+        """
+
+        if not self.registry_path.is_file():
+            return [], 0
+
+        clauses: list[str] = []
+        parameters: list[Any] = []
+        if status:
+            clauses.append("status = ?")
+            parameters.append(status)
+        if trigger is not None:
+            clauses.append("trigger = ?")
+            parameters.append(trigger.value)
+        if failure_category is not None:
+            clauses.append("failure_category = ?")
+            parameters.append(failure_category.value)
+
+        where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
+        try:
+            with sqlite3.connect(self.registry_path, timeout=5.0) as connection:
+                total_row = connection.execute(
+                    f"SELECT COUNT(*) FROM trace_registry{where}",  # noqa: S608
+                    parameters,
+                ).fetchone()
+                rows = connection.execute(
+                    (
+                        "SELECT trace_id, created_at, status, final_confidence, "
+                        "trigger, root_cause_span_id, root_cause_step_id, "
+                        f"failure_category FROM trace_registry{where} "
+                        "ORDER BY created_at DESC, trace_id DESC LIMIT ? OFFSET ?"
+                    ),
+                    [*parameters, limit, offset],
+                ).fetchall()
+        except sqlite3.OperationalError as exc:
+            if "no such table: trace_registry" in str(exc).lower():
+                return [], 0
+            raise
+
+        items = [
+            ForensicTraceSummary(
+                trace_id=row[0],
+                created_at=row[1],
+                status=row[2],
+                final_confidence=row[3],
+                trigger=FailureTrigger(row[4]) if row[4] else None,
+                root_cause_span_id=row[5],
+                root_cause_step_id=row[6],
+                failure_category=FailureCategory(row[7]) if row[7] else None,
+            )
+            for row in rows
+        ]
+        return items, int(total_row[0] if total_row else 0)
+
     def flag_negative_feedback(
         self,
         trace_id: str,
@@ -1116,6 +1200,7 @@ __all__ = [
     "FailureCategory",
     "FailureTrigger",
     "ForensicTraceArtifact",
+    "ForensicTraceSummary",
     "ForensicsTracer",
     "RootCauseAnalyzer",
     "RootCauseDiagnosis",

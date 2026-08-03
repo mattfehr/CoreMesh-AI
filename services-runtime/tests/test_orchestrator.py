@@ -2,7 +2,7 @@
 
 System role:
     Protects planning, specialist dispatch, partial failure, memory, and
-    arbitration contracts for the library-only agent workflow.
+    arbitration contracts for trusted callers and public execution scopes.
 Dependencies:
     pytest-compatible discovery and injected in-memory tools/stores.
 Side effects:
@@ -33,6 +33,7 @@ from src.agents.orchestrator import (  # noqa: E402
     OrchestratorDependencies,
     SpecialistName,
     _apply_arbitration,
+    _create_plan,
     run_orchestration,
 )
 from src.tracing.forensics import ForensicsTracer  # noqa: E402
@@ -51,6 +52,40 @@ def _clean_assessments():
             confidence_coefficient=0.9,
         )
         for dimension in ("factual", "logic", "completeness")
+    ]
+
+
+@pytest.mark.parametrize(
+    ("feature_scope", "query", "expected"),
+    [
+        ("rag", "Analyze database revenue.", [SpecialistName.RAG_SEARCH]),
+        ("text_to_sql", "Find the policy document.", [SpecialistName.SQL_GENERATION]),
+    ],
+)
+def test_public_execution_scopes_force_one_specialist(feature_scope, query, expected):
+    request = ExecutionRequestPayload(
+        user_id="frontend-user",
+        feature_scope=feature_scope,
+        payload_query=query,
+    )
+
+    plan = _create_plan(request, [])
+
+    assert [step.specialist for step in plan] == expected
+
+
+def test_agent_orchestrator_scope_retains_cue_based_multi_step_planning():
+    request = ExecutionRequestPayload(
+        user_id="frontend-user",
+        feature_scope="agent_orchestrator",
+        payload_query="Search policy references and analyze the database count.",
+    )
+
+    plan = _create_plan(request, [])
+
+    assert [step.specialist for step in plan] == [
+        SpecialistName.RAG_SEARCH,
+        SpecialistName.SQL_GENERATION,
     ]
 
 

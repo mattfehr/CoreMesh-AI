@@ -1,9 +1,9 @@
 # CoreMesh intelligent runtime
 
-This Python service owns document ingestion and a minimal OpenAI-shaped chat
-completions path for gateway/regression traffic. Retrieval, guarded SQL, agent
-orchestration, memory, and consensus arbitration remain reusable Python
-libraries for trusted callers.
+This Python service owns document ingestion, a minimal OpenAI-shaped chat path,
+unified RAG/SQL/agent execution, and read-only forensic trace APIs. The public
+execution boundary exposes a deliberately restricted projection of the
+reusable orchestration libraries.
 
 ## HTTP surface
 
@@ -12,6 +12,17 @@ libraries for trusted callers.
 | <code>GET /health</code> | Process liveness only; no infrastructure check. |
 | <code>POST /v1/ingest</code> | Multipart PDF/raster upload to typed invoice extraction and validation. |
 | <code>POST /v1/chat/completions</code> | OpenAI-shaped chat body; deterministic stub unless live OpenAI is enabled. |
+| <code>POST /v1/execute</code> | Run <code>rag</code>, <code>text_to_sql</code>, or <code>agent_orchestrator</code> with application-scoped injectable dependencies on a worker thread. |
+| <code>GET /v1/traces</code> | Newest-first filtered/paginated redacted forensic summaries. |
+| <code>GET /v1/traces/{trace_id}</code> | One validated redacted forensic artifact; missing IDs return 404. |
+
+The execute route accepts only <code>user_id</code>,
+<code>feature_scope</code>, <code>payload_query</code>, and a session context
+containing optional <code>session_id</code> and <code>rag_top_k</code> from 1
+through 20. Unknown context fields—including paths, document content, or SQL
+overrides—return 422. Synchronous orchestration runs in a worker thread.
+Expected specialist/arbitration failures remain structured results; unexpected
+boundary failures return a sanitized 502.
 
 Chat completions return a stable stub when <code>COREMESH_CHAT_STUB=true</code>
 or <code>OPENAI_API_KEY</code> is unset. With a key and stub disabled, the
@@ -27,9 +38,9 @@ synchronous OCR work to a worker thread, and maps processing failures to 422.
 | --- | --- |
 | [src](src/README.md) | Runtime package and service entry point. |
 | [src/ingestion](src/ingestion/README.md) | Implemented HTTP document pipeline. |
-| [src/rag](src/rag/README.md) | Library-only dense/sparse retrieval. |
-| [src/sql_engine](src/sql_engine/README.md) | Library-only read-only SQL boundary. |
-| [src/agents](src/agents/README.md) | Library-only supervisor, specialists, and memory. |
+| [src/rag](src/rag/README.md) | Dense/sparse retrieval library, reachable through restricted execute mode. |
+| [src/sql_engine](src/sql_engine/README.md) | Read-only SQL boundary, reachable through restricted execute mode. |
+| [src/agents](src/agents/README.md) | Supervisor, specialists, memory, and unified execute implementation. |
 | [src/arbitration](src/arbitration/README.md) | Library-only multi-provider delivery gate. |
 | [src/tracing](src/tracing/README.md) | OpenTelemetry trees, JSON/SQLite registry, and backward failure analysis. |
 | [scripts](scripts/README.md) | In-process ingestion verification. |
@@ -52,8 +63,8 @@ The example API keys are placeholders. Delete the placeholder value for offline
 ingestion or replace it with a real secret. Never commit <code>.env</code>.
 
 Host-based PDF/OCR requires Tesseract and Poppler. The Dockerfile installs the
-Linux packages, but <code>docker-compose.yml</code> does not start the runtime
-image automatically.
+Linux packages. The default Compose stack omits application processes; use the
+<code>app</code> profile to start runtime, gateway, and frontend together.
 
 ## Configuration groups
 
@@ -70,7 +81,7 @@ image automatically.
 | Production feedback | Disabled-by-default publisher, JSON deployment-specific redaction patterns, and PostgreSQL connection/statement timeouts. It stores no user ID, response, or feedback reason. |
 | Agent memory | Chroma directory/collection and Redis TTL. |
 | Retrieval | Dense/sparse RRF weights, cross-encoder model, and exact technical-token priority. |
-| Forensics | Enable flag, JSON/SQLite paths, confidence/drop thresholds, redacted attribute limit, and optional standard OTLP endpoint. |
+| Forensics | Enable flag, JSON/SQLite paths, confidence/drop thresholds, redacted attribute limit, and optional standard OTLP endpoint. Compose persists JSON/SQLite under the <code>runtime-traces</code> volume. |
 
 Defaults target the root Compose stack. They are development defaults, not
 production credentials or authorization boundaries.
@@ -105,5 +116,5 @@ The unit tests use fakes or in-memory databases and require no live provider or
 Compose service. The ingestion verification rewrites the fixture and runs
 native OCR; it can call OpenAI if a key is configured.
 
-There is currently no test dedicated to the FastAPI liveness/media-type
-boundary beyond the ingestion verification script.
+HTTP contract tests cover execution validation/delegation and forensic
+pagination, path-safe trace IDs, missing artifacts, and redaction.

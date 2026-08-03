@@ -7,21 +7,23 @@ phases; it does not override the checked-in code.
 
 ## System boundaries
 
-CoreMesh currently has four runtime layers:
+CoreMesh currently has five runtime layers:
 
 | Layer | Owned responsibility | Explicitly outside the layer |
 | --- | --- | --- |
-| Go gateway | Edge admission, model routing, optional semantic caching, rate limiting, and primary/fallback resilience. | Document interpretation, retrieval generation, SQL execution, and agent work. |
-| Python runtime | HTTP ingestion, minimal chat completions, plus reusable retrieval, SQL, orchestration, memory, and arbitration libraries. | Edge traffic policy and persistent infrastructure lifecycle. |
+| React frontend | Local execution workspace, gateway metric presentation, and read-only redacted trace visualization. | Direct runtime access, authentication, trace mutation, indexing, approvals, and infrastructure ownership. |
+| Go gateway | Browser CORS/observability, edge admission, model routing, optional semantic caching, rate limiting, and primary/fallback resilience. | Document interpretation, retrieval generation, SQL execution, and agent work. |
+| Python runtime | HTTP ingestion/chat, restricted unified execution/trace reads, plus reusable retrieval, SQL, orchestration, memory, and arbitration libraries. | Edge traffic policy and persistent infrastructure lifecycle. |
 | Local data stack | PostgreSQL metadata, Redis operational state, and Qdrant vectors. | Starting the gateway/runtime or scheduling background work. |
 | Offline analytics | Redacted failure clustering, reference generation, candidate review routing, and golden-dataset promotion. | Serving requests, retaining raw prompts, or approving low-confidence labels. |
 
 The analytics scheduler is opt-in through its Compose profile. An
-<code>app</code> Compose profile boots the runtime and gateway for local/CI
-smoke tests. Model-regression CI and guarded self-healing documentation are
-live repository-automation boundaries. Prompt/flag control-plane packages
-remain placeholders. Fine-tuning is an implemented offline analytics boundary
-and does not join request serving.
+<code>app</code> Compose profile boots the runtime, gateway, and frontend for
+local/CI smoke tests and persists runtime forensics in a named volume.
+Model-regression CI and guarded self-healing documentation are live
+repository-automation boundaries. Prompt/flag control-plane packages remain
+placeholders. Fine-tuning is an implemented offline analytics boundary and
+does not join request serving.
 
 ## Gateway request flow
 
@@ -31,11 +33,20 @@ and listens on port 8080. Startup fails closed if configuration or mandatory
 Redis access is invalid.
 
 <code>GET /healthz</code> is handled by the top-level multiplexer and bypasses
-all middleware. Every other path follows this order:
+all middleware. The browser application wrapper handles CORS and local
+observability before proxy middleware:
 
 ~~~text
 HTTP request
     |
+    v
+CORS allowlist
+    |-- valid preflight: 204, no admission/counter consumption
+    |-- disallowed preflight: 403
+    |-- GET /v1/observability: local no-store snapshot
+    v
+Process-local response counters
+    |  count cache/route/status metadata after completion
     v
 Autopilot router
     |  compatible JSON POST:
@@ -59,6 +70,12 @@ Circuit breaker and reverse proxy
     v
 Configured upstream
 ~~~
+
+Allowed origins default to the local frontend on ports 3000 and 5173. Normal
+allowlisted responses expose rate-limit, cache, route, circuit, and autopilot
+headers. Operational counters contain no request content or identity, reset at
+gateway restart, and exclude both preflights and their own snapshot endpoint.
+Cache hit rate is derived only from eligible hit/miss traffic.
 
 ### Autopilot invariants
 
@@ -84,6 +101,11 @@ cache bypass. Only successful 2xx responses are stored, and store/hit-counter
 write failures do not replace the upstream response. This favors availability
 over cache completeness. Cached model output is persistent application data
 for the configured TTL and must be treated accordingly.
+
+Unified <code>/v1/execute</code> requests bypass semantic lookup/storage even
+when caching is enabled. They create forensic/memory side effects and may read
+fresh SQL or RAG state, so replaying an old response would violate execution
+semantics.
 
 ### Admission and resilience invariants
 
@@ -151,11 +173,37 @@ consume substantial CPU, and EasyOCR may initialize/download model weights on
 first use. When OpenAI-backed paths are active, document content leaves the
 local trust boundary and calls can incur cost.
 
-## Library-only runtime flows
+## Unified execution and runtime libraries
 
-The following components are implemented and tested but are not mounted as
-FastAPI routes. Their callers are responsible for authentication, authorization,
-input limits, cancellation, and lifecycle management.
+FastAPI <code>POST /v1/execute</code> exposes three browser-safe feature
+scopes: <code>rag</code>, <code>text_to_sql</code>, and
+<code>agent_orchestrator</code>. It accepts only user/query text plus optional
+session ID and RAG result count. Extra context fields, filesystem paths,
+document content, and explicit SQL overrides are rejected by a strict request
+model. The synchronous workflow runs in a worker thread and reuses one lazy,
+application-scoped dependency graph.
+
+~~~text
+React Execution Studio :3000
+    |
+    | POST /v1/execute (browser calls gateway :8080 only)
+    v
+Gateway admission / circuit routing
+    |
+    v
+FastAPI restricted request projection :8000
+    |-- rag ---------------> force RAG specialist
+    |-- text_to_sql -------> force SQL specialist
+    |-- agent_orchestrator -> cue-based ordered specialist plan
+    v
+memory -> synthesis -> arbitration -> redacted trace -> OrchestrationResult
+~~~
+
+Expected specialist and arbitration failures remain structured partial or
+blocked results. Request validation returns 422; unexpected HTTP boundary
+failures are sanitized as 502. Trusted Python callers retain the broader
+library contracts and are responsible for authorization, path controls,
+cancellation, and lifecycle management.
 
 ### Hybrid retrieval
 
@@ -196,8 +244,8 @@ the synthesized result can report partial failure. After synthesis, consensus
 arbitration may replace or block the deliverable.
 
 One specialist accepts document bytes, base64, text, or a filesystem path from
-session context. Any future network endpoint exposing that feature must
-validate path access; the library itself assumes a trusted caller.
+trusted Python session context. The public HTTP model intentionally cannot
+select that specialist or provide any of those fields.
 
 ### Consensus arbitration
 
@@ -209,14 +257,21 @@ adjudicator failure blocks delivery for review.
 
 The default clients can call OpenAI, Anthropic, and Ollama. A clean critic pass
 releases the original text, while adjudication can release, remediate, block,
-or request manual review. No HTTP route or durable review queue currently
-consumes manual-review verdicts.
+or request manual review. Unified execution returns that structured verdict,
+but no direct arbitration endpoint or durable review queue acts on it.
 
 ### Failure forensics and production feedback
 
 OpenTelemetry forensics writes a redacted JSON tree per orchestration and a
 queryable SQLite registry. Prompt, response, identity, SQL, exception, and
 feedback bodies remain hash-and-length metadata in those artifacts.
+
+The runtime exposes read-only trace summaries and detail artifacts through the
+gateway. Summaries are newest-first, filterable, and paginated without
+artifact paths or session hashes. Detail IDs are constrained to lowercase
+32-character hexadecimal values. The frontend derives a top-down React Flow
+graph strictly from redacted spans and <code>parent_span_id</code>, highlighting
+degraded, failed/root-cause, and arbitration/escalation nodes.
 
 Production feedback uses a separate, explicitly enabled PostgreSQL sink. Before
 storage, the runtime applies configured regex redaction and drops user IDs,
@@ -305,6 +360,7 @@ concurrent non-fast-forward pushes fail without bypassing protection.
 | In-process BM25 corpus | RAG sparse index | Lost at process exit. |
 | Redis agent sessions/events | Orchestrator | TTL controlled by runtime settings. |
 | Chroma agent summaries | Orchestrator | Local persistent directory; deterministic interaction ID upserts. |
+| Runtime forensic JSON/SQLite | Orchestrator and read-only trace API | Compose <code>runtime-traces</code> volume; redacted artifacts persist across container recreation. |
 | OpenAI APIs | Ingestion, RAG, arbitration, gateway cache, log miner, self-healing docs | External transmission, latency, rate limits, and cost; the miner sends redacted prompts, while trusted documentation runs send selected code deltas and Markdown context. |
 | Anthropic API / Ollama | Arbitration | External or local provider calls when arbitration runs. |
 | OCR/model caches | EasyOCR and sentence-transformers | May download and persist model weights outside the repository. |
@@ -320,7 +376,13 @@ invoked.
 The gateway reads environment variables once during startup. Redis is connected
 and pinged immediately. Semantic-cache configuration can require OpenAI
 credentials; autopilot is on by default and opens a PostgreSQL pool only when a
-DSN is supplied. Restart the gateway after configuration changes.
+DSN is supplied. Its exact CORS origin allowlist is also startup configuration.
+Restart the gateway after configuration changes.
+
+The frontend gateway origin is a Vite build-time variable, not runtime service
+discovery. Local and Compose builds default to <code>http://localhost:8080</code>
+because the browser—not the Nginx container—resolves that address. Rebuild the
+bundle after changing it.
 
 Detailed variable names, defaults, and validation rules live in the gateway
 and runtime READMEs next to their configuration code.
@@ -342,7 +404,9 @@ blueprint:
   not benchmark, promote, or deploy the resulting adapter.
 - repository automation includes active model-regression and guarded
   self-healing-documentation workflows.
-- there is no frontend or human-review application.
+- the frontend implements read-only local operations views, but there is no
+  human-review queue, replay, trace mutation, document-index management,
+  feature-flag administration, authentication, or tenant authorization.
 
 When one of these becomes real, update its README, file headers, this document,
 the root status table, and the nearest tests in the same change. Follow

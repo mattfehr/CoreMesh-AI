@@ -1,9 +1,10 @@
 # Supervisor orchestration
 
-This package implements a trusted Python API for deterministic task planning,
-specialist execution, memory, synthesis, and response arbitration. It is not
-mounted on FastAPI and does not implement human approval or a durable review
-queue.
+This package implements deterministic task planning, specialist execution,
+memory, synthesis, and response arbitration. FastAPI mounts a restricted
+<code>/v1/execute</code> projection for RAG, text-to-SQL, and agent mode. The
+full Python API remains available to trusted callers and no human approval or
+durable review queue is implemented.
 
 ## Flow
 
@@ -20,9 +21,11 @@ ExecutionRequestPayload
   -> OrchestrationResult
 ~~~
 
-Query/context cues select steps. A request with no recognized cue defaults to
-RAG. LangGraph runs the state machine when installed; a sequential adapter with
-the same node contract is used otherwise.
+The public RAG and SQL scopes force their corresponding single specialist.
+Public agent mode and other trusted scopes retain cue-based multi-step
+planning; a request with no recognized cue defaults to RAG. LangGraph runs the
+state machine when installed; a sequential adapter with the same node contract
+is used otherwise.
 
 ## Specialists
 
@@ -32,8 +35,8 @@ the same node contract is used otherwise.
 - SQL introspects the database, chooses explicit SQL or a small heuristic
   SELECT generator, then invokes <code>SQLSandbox</code>.
 
-The filesystem-path option assumes a trusted caller. Validate and constrain it
-before exposing orchestration over a network.
+The filesystem-path option assumes a trusted caller. The mounted HTTP model
+forbids it, document bytes/text, explicit SQL, and every unknown context field.
 
 ## Memory and failure behavior
 

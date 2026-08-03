@@ -1,11 +1,13 @@
 # Edge admission and resilience
 
-This package owns the mandatory gateway core and composes optional middleware.
+This package owns the mandatory gateway core, browser CORS, operational
+counters, and optional middleware composition.
 Its public construction paths separate production dependencies from testable
 logic:
 
 - <code>NewHandler</code> parses Redis, pings it, builds the token bucket,
-  optional cache/autopilot layers, and long-lived clients.
+  optional cache/autopilot layers, local observability endpoint, CORS wrapper,
+  and long-lived clients.
 - <code>NewProxy</code> accepts an injected <code>RateLimiter</code> for
   deterministic unit tests.
 
@@ -31,6 +33,18 @@ Request bodies are copied into replayable memory before primary proxying so the
 threshold-crossing request can use fallback after a primary error. Fallback
 outcomes do not change primary circuit state.
 
+## Browser and observability boundary
+
+An exact origin allowlist admits the local frontend on ports 3000 and 5173 by
+default. Preflights terminate outside proxy/admission middleware. Allowed
+responses expose rate-limit, cache, circuit, route, and autopilot headers.
+
+The local <code>GET /v1/observability</code> endpoint returns gateway-start
+time, admission/circuit configuration, cache outcome arithmetic, and
+content-free traffic counters. Atomic counters wrap the complete proxy
+middleware chain but exclude this endpoint and preflights. They are
+per-process and intentionally have no durable store.
+
 ## Invariants
 
 - Preserve the mutex around every transition and half-open lease.
@@ -39,6 +53,10 @@ outcomes do not change primary circuit state.
 - Preserve original host in <code>X-Forwarded-Host</code> while targeting the
   configured upstream host.
 - Keep rate limiting ahead of upstream selection.
+- Keep CORS preflight and observability outside admission and metrics.
+- Never add request bodies, prompts, identities, or artifact paths to the
+  observability contract.
 
 Tests in this directory cover concurrent probes, rolling-window pruning, body
-replay, headers, proxy errors, and miniredis token-bucket concurrency.
+replay, headers, proxy errors, miniredis token-bucket concurrency, atomic
+counter arithmetic, circuit snapshots, and CORS allow/deny behavior.

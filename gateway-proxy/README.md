@@ -1,16 +1,20 @@
 # CoreMesh gateway proxy
 
 The gateway is the Go edge process in front of the Python runtime or another
-configured provider-compatible upstream. It owns request admission, model
-routing, optional semantic caching, and primary/fallback resilience. It does
-not interpret documents or execute runtime tools.
+configured provider-compatible upstream. It owns browser CORS, process-local
+operational counters, request admission, model routing, optional semantic
+caching, and primary/fallback resilience. It does not interpret documents or
+execute runtime tools.
 
 ## Request order
 
 ~~~text
 /healthz ------------------------------> local liveness response
+/v1/observability ---------------------> local operational snapshot
+CORS preflight ------------------------> local allowlist decision
 
 all other paths
+  -> response metadata counters
   -> autopilot routing (enabled by default)
   -> semantic cache (optional)
   -> Redis token bucket (mandatory)
@@ -18,10 +22,11 @@ all other paths
   -> primary or fallback reverse proxy
 ~~~
 
-The construction order in <code>gateway.NewHandler</code> intentionally makes
-autopilot outermost. Complex requests can therefore attach a cache-bypass
-policy before cache lookup, and autopilot's rewritten model participates in the
-cache scope.
+The application wrapper handles preflight and observability before proxy
+middleware. Proxied traffic is counted outside autopilot/cache, so final
+response metadata is visible. Autopilot remains outside semantic cache:
+complex requests can attach a bypass before lookup and rewritten models
+participate in cache scope.
 
 ## Directory map
 
@@ -55,8 +60,10 @@ startup if Redis is unavailable. Restart the process after environment changes.
 | <code>CIRCUIT_FAILURE_THRESHOLD</code> | <code>5</code> | Primary failures needed within the window to open. |
 | <code>CIRCUIT_FAILURE_WINDOW</code> | <code>30s</code> | Rolling primary-failure window. |
 | <code>CIRCUIT_OPEN_DURATION</code> | <code>30s</code> | Time before one half-open primary probe. |
+| <code>GATEWAY_ALLOWED_ORIGINS</code> | <code>http://localhost:3000,http://localhost:5173</code> | Exact comma-separated browser origins allowed by CORS. |
 
 Durations use Go duration syntax. Invalid or non-positive values fail startup.
+Origins must be complete HTTP(S) origins without paths, queries, or fragments.
 
 ### Autopilot
 
@@ -82,6 +89,9 @@ Durations use Go duration syntax. Invalid or non-positive values fail startup.
 | <code>SEMANTIC_CACHE_THRESHOLD</code> | <code>0.96</code> | Minimum cosine similarity in the interval (0, 1]. |
 | <code>SEMANTIC_CACHE_TTL</code> | <code>24h</code> | Cached-response lifetime. |
 
+<code>POST /v1/execute</code> always bypasses this cache because execution
+creates traces/memory and can read freshness-sensitive SQL/RAG state.
+
 ## Request identity and response headers
 
 Rate-limit identity preference is <code>X-Team-ID</code>,
@@ -99,6 +109,22 @@ Important response headers include:
 - <code>X-CoreMesh-Cache</code> with <code>hit</code>,
   <code>miss</code>, or <code>bypass</code>.
 
+Allowlisted browser responses expose these headers. CORS preflights are handled
+before admission and never consume rate-limit tokens or increment traffic
+counters. A disallowed preflight receives 403.
+
+## Local observability API
+
+<code>GET /v1/observability</code> is served by the gateway itself and never
+reaches the runtime. It reports gateway start/snapshot timestamps, admission
+configuration, cache hit/miss/bypass counters, current circuit
+state/configuration, and total/primary/fallback/rate-limited/error traffic.
+Cache hit rate is <code>hits / (hits + misses)</code> and is
+<code>null</code> before eligible traffic.
+
+Counters are thread-safe, content-free, process-local, and reset on restart.
+The observability request itself and CORS preflights are excluded. Mutation
+methods receive 405 and snapshots use <code>Cache-Control: no-store</code>.
 See each internal package guide for exact contracts.
 
 ## Failure policy and side effects

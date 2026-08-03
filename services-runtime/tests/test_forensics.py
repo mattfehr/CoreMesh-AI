@@ -186,6 +186,48 @@ def test_deliberate_sub_agent_error_writes_exact_json_root_cause(tmp_path):
         tracer.shutdown()
 
 
+def test_trace_registry_listing_is_paginated_filterable_and_path_safe(tmp_path):
+    tracer = ForensicsTracer(trace_directory=tmp_path / "traces")
+    try:
+        with tracer.execution("coremesh.agent.workflow") as healthy:
+            with tracer.span("coremesh.tool.healthy", SpanCategory.TOOL):
+                pass
+            healthy.set_outcome(status="completed", final_confidence=0.9)
+
+        with tracer.execution("coremesh.agent.workflow") as failed:
+            with tracer.span("coremesh.tool.failed", SpanCategory.TOOL) as span:
+                tracer.mark_error(span, RuntimeError("PRIVATE_FAILURE"))
+            failed.set_outcome(
+                status="completed_with_errors",
+                trigger=FailureTrigger.EXECUTION_ERROR,
+                reasons=["tool_failed"],
+                final_confidence=0.2,
+            )
+
+        items, total = tracer.list_traces(limit=1, offset=0)
+        filtered, filtered_total = tracer.list_traces(
+            trigger=FailureTrigger.EXECUTION_ERROR
+        )
+
+        assert total == 2
+        assert len(items) == 1
+        assert items[0].trace_id == failed.trace_id
+        assert not hasattr(items[0], "artifact_path")
+        assert filtered_total == 1
+        assert filtered[0].status == "completed_with_errors"
+        assert filtered[0].trigger == FailureTrigger.EXECUTION_ERROR
+    finally:
+        tracer.shutdown()
+
+
+def test_trace_registry_listing_is_empty_before_first_trace(tmp_path):
+    tracer = ForensicsTracer(trace_directory=tmp_path / "missing")
+    try:
+        assert tracer.list_traces() == ([], 0)
+    finally:
+        tracer.shutdown()
+
+
 def test_backward_analyzer_selects_first_confidence_drop_and_feedback_updates_registry(
     tmp_path,
 ):
@@ -311,6 +353,8 @@ def test_safe_attributes_preserve_allowlisted_metrics_and_hash_bodies():
             "output_tokens": 8,
             "sql": "SELECT * FROM customers WHERE ssn = 'SECRET'",
             "prompt": "leak this prompt body",
+            "coremesh.request.query": "private customer query",
+            "coremesh.final.response": "private generated response",
             "coremesh.request.user_id": "sensitive-user@example.test",
             "exception.type": "RuntimeError",
         },
@@ -323,9 +367,15 @@ def test_safe_attributes_preserve_allowlisted_metrics_and_hash_bodies():
     assert safe["exception.type"] == "RuntimeError"
     assert "sql" not in safe
     assert "prompt" not in safe
+    assert "coremesh.request.query" not in safe
+    assert "coremesh.final.response" not in safe
     assert "coremesh.request.user_id" not in safe
     assert "sql.sha256" in safe
     assert "prompt.sha256" in safe
+    assert "coremesh.request.query.sha256" in safe
+    assert "coremesh.final.response.sha256" in safe
     assert "coremesh.request.user_id.sha256" in safe
     assert "SECRET" not in str(safe)
     assert "leak this prompt body" not in str(safe)
+    assert "private customer query" not in str(safe)
+    assert "private generated response" not in str(safe)

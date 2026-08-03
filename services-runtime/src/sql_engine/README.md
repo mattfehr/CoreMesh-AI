@@ -3,6 +3,8 @@
 <code>SQLSandbox</code> is a defense-in-depth boundary for generated
 text-to-SQL. It exposes schema introspection, validation, bounded execution, and
 materialized result contracts to trusted Python callers and the SQL specialist.
+The runtime's restricted <code>/v1/execute</code> SQL mode invokes that
+specialist without accepting raw SQL overrides from the HTTP client.
 
 ## Validation policy
 

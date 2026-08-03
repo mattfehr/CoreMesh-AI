@@ -268,6 +268,34 @@ func TestSemanticCachePolicyBypassSkipsLookupAndStore(t *testing.T) {
 	}
 }
 
+func TestUnifiedExecutionAlwaysBypassesSemanticCache(t *testing.T) {
+	embedder := &countingEmbedder{}
+	store := newMemoryStore()
+	semanticCache := newTestSemanticCache(t, store, embedder)
+	handler := semanticCache.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `{"status":"completed"}`)
+	}))
+	request := httptest.NewRequest(
+		http.MethodPost,
+		"/v1/execute",
+		strings.NewReader(`{"payload_query":"Find policy","feature_scope":"rag"}`),
+	)
+	request.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+
+	handler.ServeHTTP(response, request)
+
+	if got := response.Header().Get(HeaderCache); got != cacheHeaderBypass {
+		t.Fatalf("%s = %q, want %q", HeaderCache, got, cacheHeaderBypass)
+	}
+	if embedder.count.Load() != 0 {
+		t.Fatalf("embed calls = %d, want 0", embedder.count.Load())
+	}
+	if store.count() != 0 {
+		t.Fatalf("stored entries = %d, want 0", store.count())
+	}
+}
+
 func TestRedisStoreVectorSearchIntegration(t *testing.T) {
 	redisURL := strings.TrimSpace(os.Getenv("REDIS_STACK_URL"))
 	if redisURL == "" {

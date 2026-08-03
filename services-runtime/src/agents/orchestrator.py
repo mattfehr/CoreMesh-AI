@@ -1,9 +1,9 @@
 """LangGraph supervisor workflow for CoreMesh Project 15.
 
 System role:
-    Coordinates library-only document, retrieval, and SQL specialists, records
-    working/semantic memory, synthesizes their observations, and sends every
-    final response through the consensus delivery gate.
+    Coordinates document, retrieval, and SQL specialists for trusted callers
+    and the restricted HTTP execution projection, records working/semantic
+    memory, synthesizes observations, and applies the consensus delivery gate.
 Dependencies:
     Pydantic defines state contracts; LangGraph is optional; default tools use
     ingestion, RAG, SQL, Redis, Chroma, and multi-provider arbitration.
@@ -843,24 +843,49 @@ def _create_plan(
     context = request.session_context or {}
     steps: list[PlanStep] = []
 
-    needs_rag = any(
-        token in query
-        for token in ("lookup", "search", "find", "policy", "document", "reference", "knowledge")
-    )
-    needs_document = bool(
-        context.get("document_text")
-        or context.get("document_bytes")
-        or context.get("document_base64")
-        or context.get("document_path")
-        or any(token in query for token in ("invoice", "extract", "document", "receipt"))
-    )
-    needs_sql = bool(
-        context.get("sql_query")
-        or any(
+    feature_scope = request.feature_scope.strip().lower()
+    if feature_scope == "rag":
+        # The public execution API uses feature scope as an explicit dispatch
+        # contract. Other trusted callers retain the cue-based planner below.
+        needs_rag, needs_document, needs_sql = True, False, False
+    elif feature_scope == "text_to_sql":
+        needs_rag, needs_document, needs_sql = False, False, True
+    else:
+        needs_rag = any(
             token in query
-            for token in ("database", "db", "sql", "analysis", "analyze", "revenue", "orders", "count")
+            for token in (
+                "lookup",
+                "search",
+                "find",
+                "policy",
+                "document",
+                "reference",
+                "knowledge",
+            )
         )
-    )
+        needs_document = bool(
+            context.get("document_text")
+            or context.get("document_bytes")
+            or context.get("document_base64")
+            or context.get("document_path")
+            or any(token in query for token in ("invoice", "extract", "document", "receipt"))
+        )
+        needs_sql = bool(
+            context.get("sql_query")
+            or any(
+                token in query
+                for token in (
+                    "database",
+                    "db",
+                    "sql",
+                    "analysis",
+                    "analyze",
+                    "revenue",
+                    "orders",
+                    "count",
+                )
+            )
+        )
 
     if needs_rag:
         steps.append(
