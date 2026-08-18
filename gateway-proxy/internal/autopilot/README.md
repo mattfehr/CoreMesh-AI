@@ -21,9 +21,11 @@ together.
 
 ## Experiments
 
-When <code>POSTGRES_DSN</code> is set, the store reads one row from
-<code>feature_experiments</code> with a per-request timeout. A SHA-256 hash of
-flag plus preferred user identity assigns a stable bucket from 0 to 99.
+When <code>POSTGRES_DSN</code> is set, construction performs a bounded
+PostgreSQL ping before the gateway starts, then the store reads one row from
+<code>feature_experiments</code> with the same configured per-request timeout.
+A SHA-256 hash of flag plus preferred user identity assigns a stable bucket
+from 0 to 99.
 
 - running experiments choose experimental inside rollout and baseline outside;
 - rolled-back experiments force baseline;

@@ -30,16 +30,16 @@ import uuid
 from dataclasses import dataclass, field, is_dataclass, asdict
 from enum import Enum
 from pathlib import Path
-from typing import Any, Mapping, Protocol, Sequence, TypedDict
+from typing import Any, Literal, Mapping, Protocol, Sequence, TypedDict
 
 from pydantic import BaseModel, Field
 
 from src.arbitration.consensus import (
     ArbitrationPayload,
-    ConsensusArbitrator,
     ConsensusStatus,
     ConsensusVerdict,
     CriticFailure,
+    configured_arbitrator,
 )
 from src.config import settings
 from src.tracing.forensics import (
@@ -93,7 +93,7 @@ class ToolObservation(BaseModel):
     observation_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     step_id: str
     specialist: SpecialistName
-    status: str
+    status: Literal["success", "error", "skipped"]
     input_payload: dict[str, Any] = Field(default_factory=dict)
     output: dict[str, Any] = Field(default_factory=dict)
     error: str | None = None
@@ -545,7 +545,7 @@ class OrchestratorDependencies:
     sql_tool: SpecialistTool = field(default_factory=SQLGenerationTool)
     short_term_memory: ShortTermMemory = field(default_factory=RedisShortTermMemory)
     semantic_memory: SemanticMemory = field(default_factory=ChromaSemanticMemory)
-    arbitrator: ResponseArbitrator = field(default_factory=ConsensusArbitrator)
+    arbitrator: ResponseArbitrator = field(default_factory=configured_arbitrator)
     forensics: ForensicsTracer = field(default_factory=get_forensics)
     interaction_log_sink: InteractionLogSink = field(
         default_factory=configured_interaction_log_sink
@@ -759,7 +759,12 @@ def _build_nodes(deps: OrchestratorDependencies) -> dict[str, Any]:
                     ) as tool_span:
                         output = tool.run(state.request, step, state.observations)
                         _record_tool_quality(tool_span, specialist, output)
-                    status = "success"
+                    normalized_output = _normalize_tool_output(output)
+                    status = (
+                        "skipped"
+                        if normalized_output.get("status") == "skipped"
+                        else "success"
+                    )
                     error = None
                 except Exception as exc:  # pragma: no cover - integration path
                     log.exception(
@@ -767,7 +772,7 @@ def _build_nodes(deps: OrchestratorDependencies) -> dict[str, Any]:
                         extra={"specialist": specialist.value},
                     )
                     deps.forensics.mark_error(node_span, exc)
-                    output = {}
+                    normalized_output = {}
                     status = "error"
                     error = str(exc)
 
@@ -776,13 +781,18 @@ def _build_nodes(deps: OrchestratorDependencies) -> dict[str, Any]:
                     specialist=specialist,
                     status=status,
                     input_payload=input_payload,
-                    output=_normalize_tool_output(output),
+                    output=normalized_output,
                     error=error,
                     latency_ms=round((time.perf_counter() - started) * 1_000, 2),
                 )
                 state.observations.append(observation)
+                plan_status = {
+                    "success": "completed",
+                    "skipped": "skipped",
+                    "error": "failed",
+                }[status]
                 state.plan[state.current_step_index] = step.model_copy(
-                    update={"status": "completed" if status == "success" else "failed"}
+                    update={"status": plan_status}
                 )
                 state.current_step_index += 1
                 state.dispatch_next = None
@@ -1010,10 +1020,7 @@ def _apply_arbitration(
             user_id=result.user_id,
             feature_scope=result.feature_scope,
             session_id=result.session_id,
-            metadata={
-                "workflow_status": result.status,
-                "observation_count": len(result.observations),
-            },
+            metadata=_arbitration_metadata(result),
         )
         verdict = ConsensusVerdict.blocked(
             empty_payload,
@@ -1033,10 +1040,7 @@ def _apply_arbitration(
         user_id=result.user_id,
         feature_scope=result.feature_scope,
         session_id=result.session_id,
-        metadata={
-            "workflow_status": result.status,
-            "observation_count": len(result.observations),
-        },
+        metadata=_arbitration_metadata(result),
     )
 
     try:
@@ -1065,6 +1069,21 @@ def _apply_arbitration(
         updates["status"] = "blocked_by_arbitration"
 
     return result.model_copy(update=updates)
+
+
+def _arbitration_metadata(result: OrchestrationResult) -> dict[str, Any]:
+    """Expose workflow completeness without passing specialist content."""
+
+    return {
+        "workflow_status": result.status,
+        "observation_count": len(result.observations),
+        "failed_observation_count": sum(
+            observation.status == "error" for observation in result.observations
+        ),
+        "skipped_observation_count": sum(
+            observation.status == "skipped" for observation in result.observations
+        ),
+    }
 
 
 def _invoke_arbitrator(
@@ -1167,8 +1186,12 @@ def _synthesize_response(state: SupervisorState) -> str:
     ]
 
     for observation in state.observations:
-        if observation.status != "success":
+        if observation.status == "error":
             lines.append(f"{observation.specialist.value}: failed ({observation.error}).")
+            continue
+        if observation.status == "skipped":
+            reason = observation.output.get("reason") or "no applicable input was supplied"
+            lines.append(f"{observation.specialist.value}: skipped ({reason}).")
             continue
 
         if observation.specialist == SpecialistName.RAG_SEARCH:
@@ -1209,6 +1232,8 @@ def _synthesize_response(state: SupervisorState) -> str:
 def _completion_status(observations: Sequence[ToolObservation]) -> str:
     if any(observation.status == "error" for observation in observations):
         return "completed_with_errors"
+    if any(observation.status == "skipped" for observation in observations):
+        return "completed_with_gaps"
     return "completed"
 
 

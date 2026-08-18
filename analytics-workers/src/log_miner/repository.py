@@ -21,6 +21,147 @@ from .models import (
 )
 
 
+class LogSourceSchemaError(RuntimeError):
+    """Raised when the privacy-approved source table is not migration-ready."""
+
+
+_SOURCE_COLUMNS = {
+    "trace_id": ("varchar", True),
+    "feature_scope": ("varchar", True),
+    "redacted_prompt": ("text", True),
+    "prompt_fingerprint": ("bpchar", True),
+    "arbitration_scores": ("jsonb", True),
+    "min_arbitration_score": ("int2", False),
+    "arbitration_status": ("varchar", False),
+    "negative_feedback": ("bool", True),
+    "created_at": ("timestamptz", True),
+    "updated_at": ("timestamptz", True),
+}
+_SOURCE_CONSTRAINTS = {
+    "production_interaction_logs_pkey",
+    "production_interaction_feature_scope_nonblank",
+    "production_interaction_prompt_nonblank",
+    "production_interaction_score_bounds",
+}
+_SOURCE_INDEXES = {
+    "production_interaction_logs_eligible_idx",
+    "production_interaction_logs_prompt_fingerprint_idx",
+}
+
+
+def check_log_source(
+    postgres_dsn: str,
+    *,
+    connect_timeout_seconds: int = 5,
+) -> int:
+    """Validate the redacted source schema and return its eligible row count.
+
+    The check deliberately reads catalog metadata and an aggregate only. It
+    never selects prompts, trace IDs, scores, or other row-level values, which
+    makes it safe for a container health check and integration-test output.
+    """
+
+    if connect_timeout_seconds < 1:
+        raise ValueError("connect timeout must be positive")
+
+    engine = create_engine(
+        postgres_dsn,
+        pool_pre_ping=True,
+        connect_args={"connect_timeout": connect_timeout_seconds},
+    )
+    try:
+        with engine.connect() as connection:
+            connection.execute(
+                text("SELECT set_config('statement_timeout', :timeout, true)"),
+                {"timeout": f"{connect_timeout_seconds * 1000}ms"},
+            )
+            relation_kind = connection.execute(
+                text(
+                    """
+                    SELECT relation.relkind
+                    FROM pg_class AS relation
+                    WHERE relation.oid = to_regclass('production_interaction_logs')
+                    """
+                )
+            ).scalar_one_or_none()
+            if relation_kind not in {"r", "p"}:
+                raise LogSourceSchemaError("source table is unavailable")
+
+            columns = {
+                row["column_name"]: (row["type_name"], row["not_null"])
+                for row in connection.execute(
+                    text(
+                        """
+                        SELECT
+                            attribute.attname AS column_name,
+                            type.typname AS type_name,
+                            attribute.attnotnull AS not_null
+                        FROM pg_attribute AS attribute
+                        JOIN pg_type AS type ON type.oid = attribute.atttypid
+                        WHERE attribute.attrelid =
+                                to_regclass('production_interaction_logs')
+                          AND attribute.attnum > 0
+                          AND NOT attribute.attisdropped
+                        """
+                    )
+                ).mappings()
+            }
+            if any(columns.get(name) != contract for name, contract in _SOURCE_COLUMNS.items()):
+                raise LogSourceSchemaError("source columns do not match the contract")
+
+            constraints = set(
+                connection.execute(
+                    text(
+                        """
+                        SELECT constraint_record.conname
+                        FROM pg_constraint AS constraint_record
+                        WHERE constraint_record.conrelid =
+                                to_regclass('production_interaction_logs')
+                        """
+                    )
+                ).scalars()
+            )
+            if not _SOURCE_CONSTRAINTS.issubset(constraints):
+                raise LogSourceSchemaError("source constraints do not match the contract")
+
+            indexes = set(
+                connection.execute(
+                    text(
+                        """
+                        SELECT index_relation.relname
+                        FROM pg_index AS index_record
+                        JOIN pg_class AS index_relation
+                          ON index_relation.oid = index_record.indexrelid
+                        WHERE index_record.indrelid =
+                                to_regclass('production_interaction_logs')
+                          AND index_record.indisvalid
+                          AND index_record.indisready
+                        """
+                    )
+                ).scalars()
+            )
+            if not _SOURCE_INDEXES.issubset(indexes):
+                raise LogSourceSchemaError("source indexes do not match the contract")
+
+            eligible_count = connection.execute(
+                text(
+                    """
+                    SELECT COUNT(*)
+                    FROM production_interaction_logs
+                    WHERE BTRIM(feature_scope) <> ''
+                      AND BTRIM(redacted_prompt) <> ''
+                      AND (
+                          negative_feedback
+                          OR min_arbitration_score < 4
+                      )
+                    """
+                )
+            ).scalar_one()
+        return int(eligible_count)
+    finally:
+        engine.dispose()
+
+
 class PostgresLogMinerRepository:
     """SQLAlchemy repository with durable leases and transaction fencing."""
 

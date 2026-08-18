@@ -11,6 +11,18 @@ Side effects:
     load or download reranker weights.
 """
 
-from src.rag.retrieval import HybridRetriever, RetrievalResult, TextChunk
+from src.rag.retrieval import (
+    HashEmbeddingProvider,
+    HybridRetriever,
+    LexicalReranker,
+    RetrievalResult,
+    TextChunk,
+)
 
-__all__ = ["HybridRetriever", "RetrievalResult", "TextChunk"]
+__all__ = [
+    "HashEmbeddingProvider",
+    "HybridRetriever",
+    "LexicalReranker",
+    "RetrievalResult",
+    "TextChunk",
+]

@@ -36,6 +36,8 @@ _easyocr_reader = None
 def _get_easyocr_reader():
     """Return the process-wide CPU reader, caching permanent initialization failure."""
     global _easyocr_reader
+    if not settings.ocr_easyocr_enabled:
+        return None
     if _easyocr_reader is None:
         try:
             import easyocr  # noqa: PLC0415

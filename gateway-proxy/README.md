@@ -35,7 +35,7 @@ participate in cache scope.
 | [cmd](cmd/README.md) | Process assembly, <code>/healthz</code>, listener, and fatal startup handling. |
 | [internal/gateway](internal/gateway/README.md) | Redis token bucket, reverse proxies, and circuit breaker. |
 | [internal/autopilot](internal/autopilot/README.md) | Complexity classification, model rewrite, and stable experiment assignment. |
-| [internal/cache](internal/cache/README.md) | OpenAI embeddings and Redis Stack semantic response cache. |
+| [internal/cache](internal/cache/README.md) | OpenAI or local hash embeddings and Redis Stack semantic response cache. |
 | [internal/flags](internal/flags/README.md) | Placeholder for a general feature-flag engine; no code today. |
 | [internal/registry](internal/registry/README.md) | Placeholder for prompt management; no code today. |
 | [scripts](scripts/README.md) | Standard-library live routing and load verification tools. |
@@ -45,8 +45,11 @@ participate in cache scope.
 ## Startup and configuration
 
 <code>cmd/main.go</code> reads configuration once, builds the handler, and
-listens on <code>:8080</code>. Handler construction pings Redis and fails
-startup if Redis is unavailable. Restart the process after environment changes.
+listens on <code>:8080</code>. Handler construction pings Redis and, when
+<code>POSTGRES_DSN</code> is configured, PostgreSQL. Both checks are bounded
+and fail startup when the selected dependency is unavailable. Restart the
+process after environment changes. The local [.env.example](.env.example) is
+for host development; Compose configuration lives at repository root.
 
 ### Admission and resilience
 
@@ -82,10 +85,13 @@ Origins must be complete HTTP(S) origins without paths, queries, or fragments.
 | Variable | Default | Meaning |
 | --- | --- | --- |
 | <code>SEMANTIC_CACHE_ENABLED</code> | true only when <code>OPENAI_API_KEY</code> is nonempty | Explicit cache switch. |
-| <code>OPENAI_API_KEY</code> | empty | Required to enable the OpenAI embedder. |
+| <code>SEMANTIC_CACHE_EMBEDDING_PROVIDER</code> | <code>openai</code> | <code>openai</code> for model embeddings or <code>hash</code> for deterministic local validation. |
+| <code>OPENAI_API_KEY</code> | empty | Required only when the enabled cache uses the <code>openai</code> provider. |
 | <code>OPENAI_BASE_URL</code> | <code>https://api.openai.com/v1</code> | Embedding API base. |
 | <code>OPENAI_EMBEDDING_MODEL</code> | <code>text-embedding-3-small</code> | Must produce the configured 1536 dimensions. |
 | <code>SEMANTIC_CACHE_INDEX</code> | <code>coremesh_semantic_cache</code> | RediSearch index name. |
+| <code>SEMANTIC_CACHE_KEY_PREFIX</code> | <code>coremesh:semantic:entry:</code> | Redis namespace for response entries. |
+| <code>SEMANTIC_CACHE_VECTOR_DIM</code> | <code>1536</code> | Vector width shared by the embedder and RediSearch index. |
 | <code>SEMANTIC_CACHE_THRESHOLD</code> | <code>0.96</code> | Minimum cosine similarity in the interval (0, 1]. |
 | <code>SEMANTIC_CACHE_TTL</code> | <code>24h</code> | Cached-response lifetime. |
 
@@ -139,7 +145,9 @@ See each internal package guide for exact contracts.
   and open-circuit traffic use fallback.
 - Middleware buffers eligible JSON and replayable proxy bodies in memory.
 - Redis stores rate-limit/cached-response state; PostgreSQL may be read per
-  routed request; OpenAI embeddings transmit prompt text and incur cost.
+  routed request; OpenAI embeddings transmit prompt text and incur cost. The
+  hash provider makes no external request, but is intended for development and
+  hermetic validation rather than production-quality semantic similarity.
 
 There is no authentication, TLS termination, or request-size limit in this
 binary. Put those controls at a trusted outer edge for production use.

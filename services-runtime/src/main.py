@@ -22,18 +22,21 @@ import threading
 from enum import Enum
 
 import structlog
-from fastapi import Depends, FastAPI, File, HTTPException, Query, UploadFile, status
+from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, UploadFile, status
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 from src.agents.orchestrator import (
     ExecutionRequestPayload,
+    HybridRAGSearchTool,
     OrchestrationResult,
     OrchestratorDependencies,
     run_orchestration,
 )
 from src.chat.completions import ChatCompletionRequest, build_chat_completion
-from src.ingestion.processor import process_document
-from src.ingestion.schemas import IngestResponse
+from src.ingestion.indexing import build_document_chunks
+from src.ingestion.processor import ProcessedDocument, process_document_with_pages
+from src.ingestion.schemas import IngestResponse, RAGIndexResult
+from src.rag.retrieval import HybridRetriever
 from src.tracing.forensics import (
     FailureCategory,
     FailureTrigger,
@@ -117,6 +120,20 @@ class TraceListResponse(BaseModel):
 
 
 _DEPENDENCY_LOCK = threading.Lock()
+_RETRIEVER_LOCK = threading.Lock()
+
+
+def get_rag_retriever() -> HybridRetriever:
+    """Return the one retriever shared by ingestion and RAG executions."""
+
+    retriever = getattr(app.state, "rag_retriever", None)
+    if retriever is None:
+        with _RETRIEVER_LOCK:
+            retriever = getattr(app.state, "rag_retriever", None)
+            if retriever is None:
+                retriever = HybridRetriever()
+                app.state.rag_retriever = retriever
+    return retriever
 
 
 def get_orchestrator_dependencies() -> OrchestratorDependencies:
@@ -127,7 +144,9 @@ def get_orchestrator_dependencies() -> OrchestratorDependencies:
         with _DEPENDENCY_LOCK:
             dependencies = getattr(app.state, "orchestrator_dependencies", None)
             if dependencies is None:
-                dependencies = OrchestratorDependencies()
+                dependencies = OrchestratorDependencies(
+                    rag_tool=HybridRAGSearchTool(retriever=get_rag_retriever())
+                )
                 app.state.orchestrator_dependencies = dependencies
     return dependencies
 
@@ -314,6 +333,7 @@ async def chat_completions(payload: dict) -> dict:
 @app.post(
     "/v1/ingest",
     response_model=IngestResponse,
+    response_model_exclude_none=True,
     status_code=status.HTTP_200_OK,
     tags=["ingestion"],
     summary="Ingest a document (PDF or image) and extract structured invoice data.",
@@ -322,10 +342,14 @@ async def chat_completions(payload: dict) -> dict:
         "with an optional GPT-4o vision fallback when OCR engines disagree, then uses "
         "``instructor`` + gpt-4o-mini to extract an ``ExtractionTargetSchema``. "
         "The response includes per-field extraction, OCR provenance metadata, "
-        "and a line-item sum validation result."
+        "and a line-item sum validation result. Set the multipart field "
+        "``index_for_rag=true`` to persist non-empty page text for hybrid RAG."
     ),
 )
-async def ingest_document(file: UploadFile = File(...)) -> IngestResponse:
+async def ingest_document(
+    file: UploadFile = File(...),
+    index_for_rag: bool = Form(default=False),
+) -> IngestResponse:
     """Validate and process one in-memory PDF or raster upload.
 
     Unsupported declared media types return 415, empty bodies return 400, and
@@ -353,8 +377,8 @@ async def ingest_document(file: UploadFile = File(...)) -> IngestResponse:
     try:
         # OCR and image/model clients are synchronous and CPU/blocking. Moving
         # the pipeline off the event-loop thread preserves FastAPI concurrency.
-        result: IngestResponse = await asyncio.to_thread(
-            process_document, file_bytes, file.filename or "upload"
+        processed: ProcessedDocument = await asyncio.to_thread(
+            process_document_with_pages, file_bytes, file.filename or "upload"
         )
     except Exception as exc:
         log.error("ingest.error", filename=file.filename, error=str(exc))
@@ -363,12 +387,47 @@ async def ingest_document(file: UploadFile = File(...)) -> IngestResponse:
             detail=f"Document processing failed: {exc}",
         ) from exc
 
+    result = processed.response
+    if index_for_rag:
+        document_id, chunks = build_document_chunks(
+            file_bytes,
+            file.filename or "upload",
+            processed.page_texts,
+        )
+        if not chunks:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail="Document contains no indexable text.",
+            )
+        try:
+            await asyncio.to_thread(get_rag_retriever().index_chunks, chunks)
+        except Exception as exc:
+            log.error(
+                "ingest.index.error",
+                filename=file.filename,
+                document_id=document_id,
+                error_type=type(exc).__name__,
+            )
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="RAG indexing dependencies are unavailable.",
+            ) from exc
+        result = result.model_copy(
+            update={
+                "rag_index": RAGIndexResult(
+                    document_id=document_id,
+                    chunk_count=len(chunks),
+                )
+            }
+        )
+
     log.info(
         "ingest.complete",
         filename=file.filename,
         ocr_engine=result.ocr_engine_used,
         variance=result.ocr_variance,
         validation_passed=result.validation.passed,
+        indexed_for_rag=index_for_rag,
         elapsed_ms=result.processing_time_ms,
     )
     return result

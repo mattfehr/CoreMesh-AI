@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import os
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from uuid import uuid4
 
 import pytest
@@ -21,7 +22,11 @@ from src.log_miner.models import (
     RunSummary,
     ValidationCriterion,
 )
-from src.log_miner.repository import PostgresLogMinerRepository, apply_migration
+from src.log_miner.repository import (
+    PostgresLogMinerRepository,
+    apply_migration,
+    check_log_source,
+)
 
 
 POSTGRES_DSN = os.getenv("LOG_MINER_TEST_POSTGRES_DSN")
@@ -29,6 +34,137 @@ pytestmark = pytest.mark.skipif(
     not POSTGRES_DSN,
     reason="set LOG_MINER_TEST_POSTGRES_DSN to a disposable initialized database",
 )
+
+
+def test_bootstrap_then_repeated_migration_preserves_log_miner_catalog() -> None:
+    """Prove fresh-volume bootstrap and upgrade migration remain compatible."""
+
+    assert POSTGRES_DSN is not None
+    schema = f"log_miner_bootstrap_{uuid4().hex[:12]}"
+    admin_engine = create_engine(POSTGRES_DSN)
+    isolated_engine = None
+    try:
+        with admin_engine.begin() as connection:
+            connection.execute(text(f'CREATE SCHEMA "{schema}"'))
+
+        isolated_url = make_url(POSTGRES_DSN).update_query_dict(
+            {"options": f"-csearch_path={schema},public"}
+        )
+        isolated_dsn = isolated_url.render_as_string(hide_password=False)
+        isolated_engine = create_engine(isolated_dsn)
+        bootstrap_path = Path(__file__).resolve().parents[2] / "init.sql"
+        raw_connection = isolated_engine.raw_connection()
+        try:
+            cursor = raw_connection.cursor()
+            try:
+                cursor.execute(bootstrap_path.read_text(encoding="utf-8"))
+                raw_connection.commit()
+            except Exception:
+                raw_connection.rollback()
+                raise
+            finally:
+                cursor.close()
+        finally:
+            raw_connection.close()
+
+        apply_migration(isolated_dsn)
+        apply_migration(isolated_dsn)
+
+        with isolated_engine.begin() as connection:
+            connection.execute(
+                text(
+                    """
+                    INSERT INTO production_interaction_logs (
+                        trace_id, feature_scope, redacted_prompt,
+                        prompt_fingerprint, min_arbitration_score
+                    ) VALUES
+                        ('health-eligible', 'integration', 'redacted fixture',
+                         :eligible_fingerprint, 2),
+                        ('health-ineligible', 'integration', 'redacted fixture',
+                         :ineligible_fingerprint, 5)
+                    """
+                ),
+                {
+                    "eligible_fingerprint": "a" * 64,
+                    "ineligible_fingerprint": "b" * 64,
+                },
+            )
+
+        assert check_log_source(isolated_dsn) == 1
+
+        with isolated_engine.connect() as connection:
+            tables = set(
+                connection.execute(
+                    text(
+                        """
+                        SELECT table_name
+                        FROM information_schema.tables
+                        WHERE table_schema = :schema
+                        """
+                    ),
+                    {"schema": schema},
+                ).scalars()
+            )
+            constraints = set(
+                connection.execute(
+                    text(
+                        """
+                        SELECT constraint_name
+                        FROM information_schema.table_constraints
+                        WHERE table_schema = :schema
+                        """
+                    ),
+                    {"schema": schema},
+                ).scalars()
+            )
+            indexes = set(
+                connection.execute(
+                    text(
+                        """
+                        SELECT indexname
+                        FROM pg_indexes
+                        WHERE schemaname = :schema
+                        """
+                    ),
+                    {"schema": schema},
+                ).scalars()
+            )
+
+        assert {
+            "golden_datasets",
+            "production_interaction_logs",
+            "log_miner_runs",
+            "log_miner_leases",
+            "log_miner_embedding_cache",
+            "log_miner_candidates",
+            "log_miner_candidate_members",
+        } <= tables
+        assert {
+            "production_interaction_logs_pkey",
+            "production_interaction_feature_scope_nonblank",
+            "production_interaction_prompt_nonblank",
+            "production_interaction_score_bounds",
+            "log_miner_run_status",
+            "log_miner_lease_ownership",
+            "log_miner_embedding_width",
+            "log_miner_candidate_confidence",
+            "log_miner_candidate_status",
+        } <= constraints
+        assert {
+            "production_interaction_logs_eligible_idx",
+            "production_interaction_logs_prompt_fingerprint_idx",
+            "golden_datasets_source_fingerprint_uq",
+            "log_miner_embedding_cache_prompt_idx",
+            "log_miner_candidates_review_idx",
+            "log_miner_candidates_representative_trace_idx",
+            "log_miner_candidate_members_trace_idx",
+        } <= indexes
+    finally:
+        if isolated_engine is not None:
+            isolated_engine.dispose()
+        with admin_engine.begin() as connection:
+            connection.execute(text(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE'))
+        admin_engine.dispose()
 
 
 def test_migration_upgrades_isolated_legacy_schema_and_resyncs_members() -> None:

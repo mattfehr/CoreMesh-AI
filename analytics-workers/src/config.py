@@ -10,8 +10,6 @@ Side effects:
 """
 from __future__ import annotations
 
-from typing import Literal
-
 from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -33,7 +31,7 @@ class Settings(BaseSettings):
     log_miner_provider_retry_attempts: int = Field(default=3, ge=1, le=10)
     log_miner_window_days: int = Field(default=30, ge=1, le=365)
     log_miner_retention_days: int = Field(default=30, ge=1, le=365)
-    log_miner_score_threshold: Literal[4] = 4
+    log_miner_score_threshold: int = Field(default=4, ge=1, le=5)
     log_miner_min_cluster_size: int = Field(default=3, ge=2)
     log_miner_min_samples: int = Field(default=2, ge=1)
     log_miner_cluster_metric: str = "euclidean"

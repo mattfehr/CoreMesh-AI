@@ -19,6 +19,7 @@ Public entry point: ``process_document(file_bytes, filename) → IngestResponse`
 import io
 import logging
 import time
+from dataclasses import dataclass
 from typing import List, Tuple
 
 import numpy as np
@@ -34,6 +35,18 @@ from src.ingestion.vision import extract_text_via_vision
 from src.tracing.forensics import SpanCategory, forensic_span
 
 log = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class ProcessedDocument:
+    """Internal ingestion result retaining page text for downstream indexing.
+
+    ``page_texts`` is intentionally kept outside the Pydantic HTTP response so
+    raw document text cannot be serialized accidentally by FastAPI.
+    """
+
+    response: IngestResponse
+    page_texts: tuple[str, ...]
 
 
 # ---------------------------------------------------------------------------
@@ -110,20 +123,20 @@ def _ocr_page(page_np: np.ndarray, raw_gray: np.ndarray) -> Tuple[str, float, bo
 
 
 # ---------------------------------------------------------------------------
-# Public entry point
+# Public entry points
 # ---------------------------------------------------------------------------
 
 @forensic_span("coremesh.tool.document.process", SpanCategory.TOOL)
-def process_document(file_bytes: bytes, filename: str) -> IngestResponse:
-    """Process a document file (PDF or image) end-to-end.
+def process_document_with_pages(file_bytes: bytes, filename: str) -> ProcessedDocument:
+    """Process a document and retain page text for trusted in-process callers.
 
     Args:
         file_bytes: Raw bytes of the uploaded file.
         filename:   Original filename; used to choose the loader (pdf vs image).
 
     Returns:
-        A fully populated :class:`IngestResponse` including extraction,
-        OCR metadata, and invoice-total validation result.
+        A private :class:`ProcessedDocument` containing the public response and
+        ordered OCR text for each page.
 
     Raises:
         Loader, native OCR, or configured LLM errors when the pipeline cannot
@@ -171,13 +184,22 @@ def process_document(file_bytes: bytes, filename: str) -> IngestResponse:
 
     elapsed_ms = (time.perf_counter() - t_start) * 1_000
 
-    return IngestResponse(
-        extraction=extraction,
-        ocr_engine_used=dominant_engine,
-        ocr_variance=round(max_variance, 4),
-        vision_fallback_used=any_vision,
-        llm_extraction_used=llm_used,
-        validation=validation,
-        processing_time_ms=round(elapsed_ms, 2),
-        page_count=len(pages),
+    return ProcessedDocument(
+        response=IngestResponse(
+            extraction=extraction,
+            ocr_engine_used=dominant_engine,
+            ocr_variance=round(max_variance, 4),
+            vision_fallback_used=any_vision,
+            llm_extraction_used=llm_used,
+            validation=validation,
+            processing_time_ms=round(elapsed_ms, 2),
+            page_count=len(pages),
+        ),
+        page_texts=tuple(page_texts),
     )
+
+
+def process_document(file_bytes: bytes, filename: str) -> IngestResponse:
+    """Process a document and return only the stable public API response."""
+
+    return process_document_with_pages(file_bytes, filename).response

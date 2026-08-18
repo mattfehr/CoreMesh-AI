@@ -31,7 +31,8 @@ is used otherwise.
 
 - RAG invokes <code>HybridRetriever.search</code>.
 - Document extraction accepts trusted context text, bytes, base64, or a
-  filesystem path and invokes ingestion when decoding is needed.
+  filesystem path and invokes ingestion when decoding is needed. When none is
+  supplied, it emits an explicit <code>skipped</code> observation.
 - SQL introspects the database, chooses explicit SQL or a small heuristic
   SELECT generator, then invokes <code>SQLSandbox</code>.
 
@@ -44,10 +45,19 @@ Redis stores JSON state and append-only events under session keys, normally
 with a TTL. Chroma stores one deterministic-ID summary per completed session
 using a local hash embedding. Both backends have in-memory test substitutes.
 
-Specialist exceptions become failed observations and planning proceeds to the
-next step. Redis and Chroma persistence failures are logged and degraded. Empty
-or unarbitrated output is fail-closed: arbitration/runtime failure produces a
-blocked response and status.
+<code>ToolObservation.status</code> is <code>success</code>, <code>error</code>,
+or <code>skipped</code>. Specialist exceptions become failed observations and
+produce <code>completed_with_errors</code> before arbitration. Inapplicable
+steps become skipped observations and produce <code>completed_with_gaps</code>;
+synthesis records the skip reason rather than a synthetic failure. Planning
+continues in either case. Redis and Chroma persistence failures are logged and
+degraded. Empty or unarbitrated output is fail-closed: arbitration/runtime
+failure produces a blocked response and status.
+
+Arbitration receives workflow status and failed/skipped observation counts,
+not specialist content, in its metadata. <code>ARBITRATION_MODE</code> selects
+the external or deterministic dependency factory described in the arbitration
+package.
 
 Every result includes a trace ID when forensics is enabled and an optional
 root-cause diagnosis when execution or arbitration degraded. Trace persistence

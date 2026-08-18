@@ -1,8 +1,9 @@
 """Production log-miner orchestration and command-line entry point.
 
 The pure pipeline accepts injected persistence, embedding, generation, and
-clustering adapters.  Concrete PostgreSQL/OpenAI dependencies are composed only
-for the ``migrate``, ``run``, and ``schedule`` worker commands.
+clustering adapters. Concrete PostgreSQL/OpenAI dependencies are composed only
+for the ``migrate``, ``run``, and ``schedule`` worker commands. The ``check``
+command inspects PostgreSQL only and never constructs an external provider.
 
 A renewable PostgreSQL lease fences database effects while provider calls run
 without holding a database connection. Prompt/model embeddings are cached so
@@ -969,9 +970,24 @@ def _emit_summary(summary: RunSummary) -> None:
     print(json.dumps(summary.model_dump(mode="json"), sort_keys=True))
 
 
+def _emit_check(*, status: str, schema: str, eligible_count: int) -> None:
+    """Emit a stable, content-free health payload for operators and Compose."""
+
+    print(
+        json.dumps(
+            {
+                "status": status,
+                "schema": schema,
+                "eligible_count": eligible_count,
+            },
+            sort_keys=True,
+        )
+    )
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="CoreMesh production log miner")
-    parser.add_argument("command", choices=("migrate", "run", "schedule"))
+    parser.add_argument("command", choices=("check", "migrate", "run", "schedule"))
     arguments = parser.parse_args(argv)
     logging.basicConfig(
         level=logging.INFO,
@@ -979,6 +995,19 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
 
     from src.config import settings
+
+    if arguments.command == "check":
+        from .repository import check_log_source
+
+        try:
+            eligible_count = check_log_source(settings.postgres_dsn)
+        except Exception:
+            # A health check must not echo driver messages: they can contain
+            # connection details, SQL fragments, or row-level values.
+            _emit_check(status="error", schema="invalid", eligible_count=0)
+            return 1
+        _emit_check(status="ok", schema="ready", eligible_count=eligible_count)
+        return 0
 
     if arguments.command == "migrate":
         from .repository import apply_migration

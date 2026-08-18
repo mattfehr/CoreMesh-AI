@@ -16,9 +16,10 @@ python scripts/verify_ingestion.py
 ~~~
 
 Tesseract is required for a useful offline run. EasyOCR can degrade to
-Tesseract. If <code>OPENAI_API_KEY</code> is nonempty, the normal online paths
-may transmit the generated invoice and incur cost; clear the placeholder key
-when specifically verifying offline extraction.
+Tesseract; set <code>OCR_EASYOCR_ENABLED=false</code> to prevent its
+initialization and model download entirely. If <code>OPENAI_API_KEY</code> is
+nonempty, normal online paths may transmit the generated invoice and incur
+cost; keep it blank when specifically verifying offline extraction.
 
 The script returns nonzero when assertions fail and prints manual diagnostics.
 It is intentionally allowed to regenerate the tracked fixture.

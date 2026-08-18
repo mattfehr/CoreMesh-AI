@@ -10,7 +10,7 @@ reusable orchestration libraries.
 | Method and path | Contract |
 | --- | --- |
 | <code>GET /health</code> | Process liveness only; no infrastructure check. |
-| <code>POST /v1/ingest</code> | Multipart PDF/raster upload to typed invoice extraction and validation. |
+| <code>POST /v1/ingest</code> | Multipart PDF/raster extraction with optional page-level hybrid-RAG indexing. |
 | <code>POST /v1/chat/completions</code> | OpenAI-shaped chat body; deterministic stub unless live OpenAI is enabled. |
 | <code>POST /v1/execute</code> | Run <code>rag</code>, <code>text_to_sql</code>, or <code>agent_orchestrator</code> with application-scoped injectable dependencies on a worker thread. |
 | <code>GET /v1/traces</code> | Newest-first filtered/paginated redacted forensic summaries. |
@@ -29,8 +29,15 @@ or <code>OPENAI_API_KEY</code> is unset. With a key and stub disabled, the
 runtime forwards to OpenAI.
 
 The ingestion route accepts PDF, PNG, JPEG, TIFF, BMP, and WebP content types.
-It reads the entire upload into memory, rejects empty/unsupported input, moves
-synchronous OCR work to a worker thread, and maps processing failures to 422.
+It reads the entire upload into memory, rejects empty/unsupported input, and
+moves synchronous OCR work to a worker thread. The multipart field
+<code>index_for_rag</code> defaults to <code>false</code>, preserving the
+extraction-only response and omitting <code>rag_index</code>. When true, the
+runtime derives a SHA-256 document ID from the upload, indexes each non-empty
+OCR page through the application-scoped retriever, and returns the document ID
+and chunk count. Processing failures and documents with no indexable text
+return 422; unavailable embedding or Qdrant dependencies return a sanitized
+503.
 
 ## Directory map
 
@@ -59,8 +66,9 @@ Copy-Item .env.example .env
 python -m uvicorn src.main:app --reload --port 8000
 ~~~
 
-The example API keys are placeholders. Delete the placeholder value for offline
-ingestion or replace it with a real secret. Never commit <code>.env</code>.
+The example keeps secrets blank. Leave them blank for hermetic modes or supply
+deployment-managed credentials when deliberately enabling external providers.
+Never commit <code>.env</code>.
 
 Host-based PDF/OCR requires Tesseract and Poppler. The Dockerfile installs the
 Linux packages. The default Compose stack omits application processes; use the
@@ -74,13 +82,13 @@ Linux packages. The default Compose stack omits application processes; use the
 
 | Group | Important variables and consumers |
 | --- | --- |
-| OpenAI | API key plus extraction, vision, embedding, arbitration, and adjudicator models. An empty key selects offline ingestion but prevents default dense retrieval/OpenAI critics. |
-| Other arbitration | Anthropic key/model, Ollama URL/model, score threshold, retry attempts, and overall timeout. |
-| OCR | Disagreement threshold, optional Tesseract command, and optional Poppler path. |
+| OpenAI | API key plus extraction, vision, embedding, arbitration, and adjudicator models. An empty key selects offline extraction and requires the hash provider for dense retrieval. |
+| Arbitration | <code>ARBITRATION_MODE</code>, Anthropic key/model, Ollama URL/model, score threshold, retry attempts, and overall timeout. External mode is the default. |
+| OCR | Disagreement threshold, <code>OCR_EASYOCR_ENABLED</code>, optional Tesseract command, and optional Poppler path. |
 | Infrastructure | PostgreSQL DSN for SQL, Redis URL for agent working memory, and Qdrant URL/collection/vector size for RAG. |
 | Production feedback | Disabled-by-default publisher, JSON deployment-specific redaction patterns, and PostgreSQL connection/statement timeouts. It stores no user ID, response, or feedback reason. |
 | Agent memory | Chroma directory/collection and Redis TTL. |
-| Retrieval | Dense/sparse RRF weights, cross-encoder model, and exact technical-token priority. |
+| Retrieval | <code>RAG_EMBEDDING_PROVIDER</code>, <code>RAG_RERANKER_PROVIDER</code>, dense/sparse RRF weights, cross-encoder model, and exact technical-token priority. |
 | Forensics | Enable flag, JSON/SQLite paths, confidence/drop thresholds, redacted attribute limit, and optional standard OTLP endpoint. Compose persists JSON/SQLite under the <code>runtime-traces</code> volume. |
 
 Defaults target the root Compose stack. They are development defaults, not
@@ -88,16 +96,19 @@ production credentials or authorization boundaries.
 
 ## External dependencies and side effects
 
-- Ingestion uses native Tesseract/Poppler, CPU/model-heavy EasyOCR/OpenCV, and
-  optional OpenAI document transmission.
-- RAG writes Qdrant, retains BM25 state in process, calls OpenAI embeddings, and
-  can download/load a cross-encoder.
+- Ingestion uses native Tesseract/Poppler and OpenCV. EasyOCR and OpenAI
+  document transmission are selectable and disabled in hermetic validation.
+- RAG persists text and metadata payloads in Qdrant. It lazily rebuilds the
+  application-scoped BM25 index from those payloads after restart. The default
+  providers call OpenAI and can download a cross-encoder; hash embeddings plus
+  lexical reranking avoid both external model calls and model downloads.
 - SQL introspects and queries the configured database inside a rolled-back
   read-only transaction.
 - Agents write expiring Redis state/events and persistent Chroma summaries;
   specialists can invoke all preceding side effects.
-- Arbitration can transmit original prompts and synthesized responses to
-  OpenAI, Anthropic, and Ollama, then block or replace output.
+- External arbitration can transmit original prompts and synthesized responses
+  to OpenAI, Anthropic, and Ollama, then block or replace output. Deterministic
+  mode consumes categorical workflow metadata only and makes no provider call.
 - The opt-in production-feedback publisher writes regex-redacted prompts and
   bounded arbitration signals to PostgreSQL. Its writes and later feedback
   flag updates are fail-open and bounded by connection/statement timeouts.
@@ -116,5 +127,6 @@ The unit tests use fakes or in-memory databases and require no live provider or
 Compose service. The ingestion verification rewrites the fixture and runs
 native OCR; it can call OpenAI if a key is configured.
 
-HTTP contract tests cover execution validation/delegation and forensic
-pagination, path-safe trace IDs, missing artifacts, and redaction.
+HTTP contract tests cover opt-in ingestion indexing and its 422/503 boundaries,
+execution validation/delegation, forensic pagination, path-safe trace IDs,
+missing artifacts, and redaction.

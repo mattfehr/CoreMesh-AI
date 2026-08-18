@@ -2,10 +2,11 @@
 //
 // System role: it is optional gateway middleware between autopilot and edge
 // admission, serving semantically similar successful LLM responses.
-// Dependencies: OpenAI produces embeddings and Redis Stack supplies hashes,
-// TTLs, and a RediSearch HNSW vector index.
-// Side effects: eligible requests can call OpenAI, create a Redis index, read
-// and write cached response bodies, and increment hit counters.
+// Dependencies: OpenAI or a local deterministic hash embedder produces
+// embeddings, while Redis Stack supplies hashes, TTLs, and a RediSearch HNSW
+// vector index.
+// Side effects: eligible requests can call OpenAI when configured, create a
+// Redis index, read and write cached response bodies, and increment hit counters.
 package cache
 
 import (
@@ -25,6 +26,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 	"github.com/redis/go-redis/v9"
 )
@@ -38,6 +40,11 @@ const (
 	defaultEmbeddingModel = "text-embedding-3-small"
 	defaultOpenAIBaseURL  = "https://api.openai.com/v1"
 
+	// EmbeddingProviderOpenAI uses the configured OpenAI-compatible API.
+	EmbeddingProviderOpenAI = "openai"
+	// EmbeddingProviderHash uses a deterministic, normalized local feature hash.
+	EmbeddingProviderHash = "hash"
+
 	// HeaderCache reports whether semantic cache handling was a hit, miss, or bypass.
 	HeaderCache = "x-coremesh-cache"
 	// HeaderCachePolicy allows upstream middleware to bypass semantic cache work.
@@ -50,37 +57,41 @@ const (
 
 // Config controls semantic cache behavior.
 type Config struct {
-	Enabled        bool
-	Threshold      float64
-	TTL            time.Duration
-	IndexName      string
-	KeyPrefix      string
-	VectorDim      int
-	OpenAIAPIKey   string
-	OpenAIBaseURL  string
-	EmbeddingModel string
+	Enabled           bool
+	Threshold         float64
+	TTL               time.Duration
+	IndexName         string
+	KeyPrefix         string
+	VectorDim         int
+	EmbeddingProvider string
+	OpenAIAPIKey      string
+	OpenAIBaseURL     string
+	EmbeddingModel    string
 }
 
 // DefaultConfig returns production-oriented semantic cache defaults.
 func DefaultConfig() Config {
 	return Config{
-		Threshold:      defaultThreshold,
-		TTL:            defaultTTL,
-		IndexName:      defaultIndexName,
-		KeyPrefix:      defaultKeyPrefix,
-		VectorDim:      defaultVectorDim,
-		OpenAIBaseURL:  defaultOpenAIBaseURL,
-		EmbeddingModel: defaultEmbeddingModel,
+		Threshold:         defaultThreshold,
+		TTL:               defaultTTL,
+		IndexName:         defaultIndexName,
+		KeyPrefix:         defaultKeyPrefix,
+		VectorDim:         defaultVectorDim,
+		EmbeddingProvider: EmbeddingProviderOpenAI,
+		OpenAIBaseURL:     defaultOpenAIBaseURL,
+		EmbeddingModel:    defaultEmbeddingModel,
 	}
 }
 
 // ConfigFromEnv loads semantic cache settings from environment variables.
 func ConfigFromEnv() (Config, error) {
 	cfg := DefaultConfig()
+	cfg.EmbeddingProvider = strings.ToLower(envString("SEMANTIC_CACHE_EMBEDDING_PROVIDER", cfg.EmbeddingProvider))
 	cfg.OpenAIAPIKey = strings.TrimSpace(os.Getenv("OPENAI_API_KEY"))
 	cfg.OpenAIBaseURL = envString("OPENAI_BASE_URL", cfg.OpenAIBaseURL)
 	cfg.EmbeddingModel = envString("OPENAI_EMBEDDING_MODEL", cfg.EmbeddingModel)
 	cfg.IndexName = envString("SEMANTIC_CACHE_INDEX", cfg.IndexName)
+	cfg.KeyPrefix = envString("SEMANTIC_CACHE_KEY_PREFIX", cfg.KeyPrefix)
 
 	enabledRaw := strings.TrimSpace(os.Getenv("SEMANTIC_CACHE_ENABLED"))
 	if enabledRaw == "" {
@@ -100,9 +111,15 @@ func ConfigFromEnv() (Config, error) {
 	if cfg.TTL, err = envDuration("SEMANTIC_CACHE_TTL", cfg.TTL); err != nil {
 		return Config{}, err
 	}
+	if cfg.VectorDim, err = envInt("SEMANTIC_CACHE_VECTOR_DIM", cfg.VectorDim); err != nil {
+		return Config{}, err
+	}
 
 	if err := cfg.Validate(); err != nil {
 		return Config{}, err
+	}
+	if cfg.Enabled && cfg.EmbeddingProvider == EmbeddingProviderOpenAI && cfg.OpenAIAPIKey == "" {
+		return Config{}, fmt.Errorf("OPENAI_API_KEY is required when semantic cache uses the openai embedding provider")
 	}
 	return cfg, nil
 }
@@ -124,11 +141,22 @@ func (c Config) Validate() error {
 	if c.VectorDim <= 0 {
 		return fmt.Errorf("semantic cache vector dimension must be greater than zero")
 	}
-	if strings.TrimSpace(c.OpenAIBaseURL) == "" {
-		return fmt.Errorf("OPENAI_BASE_URL is required")
-	}
-	if strings.TrimSpace(c.EmbeddingModel) == "" {
-		return fmt.Errorf("OPENAI_EMBEDDING_MODEL is required")
+	switch strings.ToLower(strings.TrimSpace(c.EmbeddingProvider)) {
+	case EmbeddingProviderOpenAI:
+		if strings.TrimSpace(c.OpenAIBaseURL) == "" {
+			return fmt.Errorf("OPENAI_BASE_URL is required")
+		}
+		if strings.TrimSpace(c.EmbeddingModel) == "" {
+			return fmt.Errorf("OPENAI_EMBEDDING_MODEL is required")
+		}
+	case EmbeddingProviderHash:
+		// The local provider has no credentials or model configuration.
+	default:
+		return fmt.Errorf(
+			"SEMANTIC_CACHE_EMBEDDING_PROVIDER must be %q or %q",
+			EmbeddingProviderOpenAI,
+			EmbeddingProviderHash,
+		)
 	}
 	return nil
 }
@@ -149,6 +177,11 @@ func (c Config) withDefaults() Config {
 	}
 	if c.VectorDim == 0 {
 		c.VectorDim = defaults.VectorDim
+	}
+	if strings.TrimSpace(c.EmbeddingProvider) == "" {
+		c.EmbeddingProvider = defaults.EmbeddingProvider
+	} else {
+		c.EmbeddingProvider = strings.ToLower(strings.TrimSpace(c.EmbeddingProvider))
 	}
 	if c.OpenAIBaseURL == "" {
 		c.OpenAIBaseURL = defaults.OpenAIBaseURL
@@ -176,6 +209,7 @@ type Store interface {
 type LookupQuery struct {
 	Vector    []float64
 	ScopeHash string
+	ExactKey  string
 	Threshold float64
 	Now       time.Time
 }
@@ -284,6 +318,7 @@ func (c *SemanticCache) Middleware(next http.Handler) http.Handler {
 		hit, found, err := c.store.Lookup(r.Context(), LookupQuery{
 			Vector:    vector,
 			ScopeHash: cacheReq.scopeHash,
+			ExactKey:  c.entryKey(cacheReq.scopeHash, cacheReq.prompt),
 			Threshold: c.cfg.Threshold,
 			Now:       time.Now().UTC(),
 		})
@@ -320,7 +355,7 @@ func (c *SemanticCache) Middleware(next http.Handler) http.Handler {
 		now := time.Now().UTC()
 		contentType := capture.Header().Get("Content-Type")
 		entry := Entry{
-			Key:         c.entryKey(cacheReq.scopeHash, cacheReq.prompt, now),
+			Key:         c.entryKey(cacheReq.scopeHash, cacheReq.prompt),
 			Vector:      vector,
 			Prompt:      cacheReq.prompt,
 			ScopeHash:   cacheReq.scopeHash,
@@ -349,8 +384,8 @@ func (c *SemanticCache) ensureIndex(ctx context.Context) error {
 	return c.ensureErr
 }
 
-func (c *SemanticCache) entryKey(scopeHash string, prompt string, now time.Time) string {
-	sum := sha256.Sum256([]byte(scopeHash + "\x00" + prompt + "\x00" + now.Format(time.RFC3339Nano)))
+func (c *SemanticCache) entryKey(scopeHash string, prompt string) string {
+	sum := sha256.Sum256([]byte(scopeHash + "\x00" + prompt))
 	return c.cfg.KeyPrefix + fmt.Sprintf("%x", sum[:])
 }
 
@@ -433,6 +468,13 @@ func (s *RedisStore) Lookup(ctx context.Context, query LookupQuery) (LookupResul
 	if now.IsZero() {
 		now = time.Now().UTC()
 	}
+	if strings.TrimSpace(query.ExactKey) != "" {
+		result, found, err := s.lookupExact(ctx, query.ExactKey, query.ScopeHash, now)
+		if err != nil || found {
+			return result, found, err
+		}
+	}
+
 	redisQuery := fmt.Sprintf("(@scope_hash:{%s} @expires_at:[%d +inf])=>[KNN 1 @embedding $vector AS distance]", query.ScopeHash, now.Unix())
 	result, err := s.client.FTSearchWithArgs(
 		ctx,
@@ -490,6 +532,39 @@ func (s *RedisStore) Lookup(ctx context.Context, query LookupQuery) (LookupResul
 	}, true, nil
 }
 
+// lookupExact reads a deterministic request key directly. This guarantees an
+// immediate repeat can hit even if RediSearch has not indexed the hash yet.
+func (s *RedisStore) lookupExact(ctx context.Context, key string, scopeHash string, now time.Time) (LookupResult, bool, error) {
+	if s == nil || s.client == nil {
+		return LookupResult{}, false, fmt.Errorf("redis client is required")
+	}
+	fields, err := s.client.HGetAll(ctx, key).Result()
+	if err != nil {
+		return LookupResult{}, false, err
+	}
+	if len(fields) == 0 || fields["scope_hash"] != scopeHash {
+		return LookupResult{}, false, nil
+	}
+
+	expiresAt, err := strconv.ParseInt(fields["expires_at"], 10, 64)
+	if err != nil || expiresAt < now.Unix() {
+		return LookupResult{}, false, nil
+	}
+	statusCode := http.StatusOK
+	if rawStatus := strings.TrimSpace(fields["status"]); rawStatus != "" {
+		if parsed, err := strconv.Atoi(rawStatus); err == nil {
+			statusCode = parsed
+		}
+	}
+	return LookupResult{
+		Key:         key,
+		Similarity:  1,
+		StatusCode:  statusCode,
+		ContentType: fields["content_type"],
+		Body:        []byte(fields["response_body"]),
+	}, true, nil
+}
+
 // Store writes a complete successful backend response into Redis.
 func (s *RedisStore) Store(ctx context.Context, entry Entry) error {
 	ttl := s.ttl
@@ -533,6 +608,80 @@ func (s *RedisStore) Store(ctx context.Context, entry Entry) error {
 // IncrementHitCount records one served cache hit.
 func (s *RedisStore) IncrementHitCount(ctx context.Context, key string) error {
 	return s.client.HIncrBy(ctx, key, "hit_count", 1).Err()
+}
+
+// NewEmbedder constructs the embedding provider selected by configuration.
+func NewEmbedder(cfg Config) (Embedder, error) {
+	cfg = cfg.withDefaults()
+	if err := cfg.Validate(); err != nil {
+		return nil, err
+	}
+	switch cfg.EmbeddingProvider {
+	case EmbeddingProviderOpenAI:
+		return NewOpenAIEmbedder(cfg)
+	case EmbeddingProviderHash:
+		return NewHashEmbedder(cfg)
+	default:
+		return nil, fmt.Errorf("unsupported semantic cache embedding provider %q", cfg.EmbeddingProvider)
+	}
+}
+
+// HashEmbedder creates deterministic local feature-hash embeddings. It is
+// intended for hermetic development and validation, not model-quality semantic
+// similarity in production.
+type HashEmbedder struct {
+	dim int
+}
+
+// NewHashEmbedder creates a local hash embedder with the configured dimension.
+func NewHashEmbedder(cfg Config) (*HashEmbedder, error) {
+	cfg = cfg.withDefaults()
+	if cfg.VectorDim <= 0 {
+		return nil, fmt.Errorf("semantic cache vector dimension must be greater than zero")
+	}
+	return &HashEmbedder{dim: cfg.VectorDim}, nil
+}
+
+// Embed returns an L2-normalized signed feature hash of lowercase word tokens.
+func (e *HashEmbedder) Embed(_ context.Context, text string) ([]float64, error) {
+	if e == nil || e.dim <= 0 {
+		return nil, fmt.Errorf("hash embedder vector dimension must be greater than zero")
+	}
+
+	vector := make([]float64, e.dim)
+	tokens := strings.FieldsFunc(strings.ToLower(text), func(r rune) bool {
+		return !unicode.IsLetter(r) && !unicode.IsNumber(r)
+	})
+	for _, token := range tokens {
+		digest := sha256.Sum256([]byte(token))
+		index := binary.BigEndian.Uint64(digest[:8]) % uint64(e.dim)
+		weight := 1.0
+		if digest[8]&1 == 1 {
+			weight = -1
+		}
+		vector[index] += weight
+	}
+
+	norm := vectorNorm(vector)
+	if norm == 0 {
+		// Punctuation-only input and rare cancelling collisions still receive a
+		// stable non-zero vector so Redis cosine search can index them.
+		digest := sha256.Sum256([]byte(strings.TrimSpace(strings.ToLower(text))))
+		vector[binary.BigEndian.Uint64(digest[:8])%uint64(e.dim)] = 1
+		norm = 1
+	}
+	for i := range vector {
+		vector[i] /= norm
+	}
+	return vector, nil
+}
+
+func vectorNorm(vector []float64) float64 {
+	var sumSquares float64
+	for _, value := range vector {
+		sumSquares += value * value
+	}
+	return math.Sqrt(sumSquares)
 }
 
 // OpenAIEmbedder calls the OpenAI embeddings API through net/http.
@@ -895,6 +1044,18 @@ func envFloat64(name string, fallback float64) (float64, error) {
 		return fallback, nil
 	}
 	value, err := strconv.ParseFloat(raw, 64)
+	if err != nil {
+		return 0, fmt.Errorf("invalid %s: %w", name, err)
+	}
+	return value, nil
+}
+
+func envInt(name string, fallback int) (int, error) {
+	raw := strings.TrimSpace(os.Getenv(name))
+	if raw == "" {
+		return fallback, nil
+	}
+	value, err := strconv.Atoi(raw)
 	if err != nil {
 		return 0, fmt.Errorf("invalid %s: %w", name, err)
 	}

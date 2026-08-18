@@ -21,12 +21,16 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.arbitration.consensus import (  # noqa: E402
     BLOCKED_RESPONSE,
+    ConsensusArbitrator,
     ConsensusStatus,
     ConsensusVerdict,
     CriticAssessmentSchema,
+    DeterministicAdjudicatorClient,
+    DeterministicCriticClient,
 )
 from src.agents.orchestrator import (  # noqa: E402
     ExecutionRequestPayload,
+    DocumentExtractionTool,
     InMemorySemanticMemory,
     InMemoryShortTermMemory,
     OrchestrationResult,
@@ -371,6 +375,60 @@ def test_orchestration_blocks_final_response_when_arbitration_flags_logical_erro
     assert result.final_response == BLOCKED_RESPONSE
     assert "2 + 2 = 5" not in result.final_response
     assert result.arbitration.status == ConsensusStatus.BLOCKED
+
+
+def test_skipped_document_workflow_is_deterministically_blocked_and_mineable():
+    invocation_order = []
+    sink = CapturingInteractionSink()
+    arbitrator = ConsensusArbitrator(
+        critics=[
+            DeterministicCriticClient("factual"),
+            DeterministicCriticClient("logic"),
+            DeterministicCriticClient("completeness"),
+        ],
+        adjudicator=DeterministicAdjudicatorClient(),
+        retry_attempts=1,
+    )
+    dependencies = OrchestratorDependencies(
+        rag_tool=FakeRAGTool(invocation_order),
+        document_tool=DocumentExtractionTool(),
+        sql_tool=FakeSQLTool(invocation_order),
+        short_term_memory=InMemoryShortTermMemory(),
+        semantic_memory=InMemorySemanticMemory(),
+        arbitrator=arbitrator,
+        forensics=DISABLED_FORENSICS,
+        interaction_log_sink=sink,
+        interaction_log_redactor=PromptRedactor(),
+    )
+
+    result = run_orchestration(
+        ExecutionRequestPayload(
+            user_id="integration-user",
+            feature_scope="agent_orchestrator",
+            payload_query="Extract invoice data.",
+            session_context={"session_id": "integration-arbitration"},
+        ),
+        dependencies,
+    )
+
+    assert result.status == "blocked_by_arbitration"
+    assert [step.specialist for step in result.plan] == [
+        SpecialistName.DOCUMENT_EXTRACTION
+    ]
+    assert result.plan[0].status == "skipped"
+    assert result.observations[0].status == "skipped"
+    assert result.observations[0].error is None
+    assert "No document_text" in result.observations[0].output["reason"]
+    assert result.final_response == BLOCKED_RESPONSE
+    assert result.arbitration.status == ConsensusStatus.BLOCKED
+    scores = {
+        item.evaluation_dimension: item.assigned_score
+        for item in result.arbitration.critic_assessments
+    }
+    assert scores == {"factual": 5, "logic": 5, "completeness": 2}
+    assert "completeness_score_below_4" in result.arbitration.triggered_by
+    assert len(sink.records) == 1
+    assert sink.records[0].min_arbitration_score == 2
 
 
 def test_orchestration_blocks_empty_final_response_without_crashing():

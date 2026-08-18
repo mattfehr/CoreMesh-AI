@@ -37,6 +37,18 @@ class ValidationResult(BaseModel):
     tolerance: float = Field(description="Acceptance tolerance used for the comparison.")
 
 
+class RAGIndexResult(BaseModel):
+    """Stable identity and page-chunk count for an indexed document."""
+
+    document_id: str = Field(
+        description="Lowercase SHA-256 digest of the original uploaded bytes."
+    )
+    chunk_count: int = Field(
+        ge=1,
+        description="Number of non-empty page-level chunks upserted for retrieval.",
+    )
+
+
 class IngestResponse(BaseModel):
     """Complete public response including data, provenance, and timing."""
     extraction: ExtractionTargetSchema
@@ -53,3 +65,7 @@ class IngestResponse(BaseModel):
     validation: ValidationResult
     processing_time_ms: float
     page_count: int
+    rag_index: RAGIndexResult | None = Field(
+        default=None,
+        description="Present only when opt-in hybrid-RAG indexing succeeds.",
+    )

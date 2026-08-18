@@ -14,9 +14,17 @@ method, escaped path, routed model, system/developer content, all other request
 parameters, and the streaming flag. Prompt similarity is evaluated only within
 that exact scope.
 
-OpenAI generates the query embedding. Redis Stack stores response hashes with
-TTL and searches their vectors through a cosine-distance HNSW RediSearch index.
-Index initialization is mutex-protected and retried after failure.
+The selected provider generates the query embedding. <code>openai</code> uses
+the configured OpenAI-compatible embeddings endpoint and requires an API key
+when caching is enabled. <code>hash</code> generates a deterministic,
+L2-normalized signed feature hash locally; it exists for credential-free
+development and validation, not production-quality semantic matching. Redis
+Stack stores response hashes with TTL and searches their vectors through a
+cosine-distance HNSW RediSearch index. Index initialization is mutex-protected
+and retried after failure. The Redis namespace and vector width are configured
+with <code>SEMANTIC_CACHE_KEY_PREFIX</code> and
+<code>SEMANTIC_CACHE_VECTOR_DIM</code>; the selected embedder must produce that
+exact width.
 
 ## Response behavior
 
@@ -32,5 +40,6 @@ contain sensitive content. TTL is not an authorization boundary. Preserve
 scope hashing when adding fields, and never remove a request parameter from the
 scope without proving that it cannot affect output.
 
-Tests inject fake embedders/stores for policy behavior and miniredis-compatible
-storage paths where applicable. No live OpenAI call is required by unit tests.
+Tests inject fake embedders/stores for policy behavior, exercise local hash
+cache hits, and cover miniredis-compatible storage paths where applicable. No
+live OpenAI call is required by unit tests.

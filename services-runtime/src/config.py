@@ -10,7 +10,7 @@ Side effects:
     import; it performs no network connection or persistent write.
 """
 
-from typing import Optional
+from typing import Literal, Optional
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -40,9 +40,11 @@ class Settings(BaseSettings):
     arbitration_score_threshold: int = 4
     arbitration_retry_attempts: int = 2
     arbitration_timeout_seconds: float = 30.0
+    arbitration_mode: Literal["external", "deterministic"] = "external"
 
     # OCR
     ocr_variance_threshold: float = 0.08
+    ocr_easyocr_enabled: bool = True
     tesseract_cmd: str = ""
     poppler_path: Optional[str] = None
 
@@ -70,6 +72,8 @@ class Settings(BaseSettings):
     forensics_max_attribute_length: int = 256
 
     # Hybrid retrieval (RRF + reranker) tuning
+    rag_embedding_provider: Literal["openai", "hash"] = "openai"
+    rag_reranker_provider: Literal["cross_encoder", "lexical"] = "cross_encoder"
     rag_dense_weight: float = 1.0
     rag_sparse_weight: float = 1.0
     rag_keyword_priority: bool = True

@@ -1,0 +1,14 @@
+.env
+.env.*
+!.env.example
+.venv/
+.pytest_cache/
+.chroma/
+.traces/
+__pycache__/
+*.py[cod]
+*.log
+tests/
+fixtures/
+scripts/
+README.md

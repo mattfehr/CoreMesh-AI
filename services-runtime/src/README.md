@@ -5,8 +5,8 @@ feature libraries:
 
 | Module or package | Integration state |
 | --- | --- |
-| <code>main.py</code> | FastAPI app with health, ingestion, chat, restricted unified execution, and read-only forensic trace routes. |
-| <code>config.py</code> | Import-time typed settings shared by all subsystems. |
+| <code>main.py</code> | FastAPI app with health, extraction plus opt-in RAG indexing, chat, restricted unified execution, and read-only forensic trace routes. |
+| <code>config.py</code> | Import-time typed settings, including provider and hermetic-mode switches, shared by all subsystems. |
 | [chat](chat/README.md) | Minimal OpenAI-shaped chat completions helper for gateway/CI. |
 | [ingestion](ingestion/README.md) | Mounted on FastAPI and reused by agents. |
 | [rag](rag/README.md) | Python API used by RAG execution mode. |

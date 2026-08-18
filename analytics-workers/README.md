@@ -54,14 +54,20 @@ python -m venv .venv
 .venv\Scripts\Activate.ps1
 python -m pip install -r requirements.txt
 Copy-Item .env.example .env
+# Edit .env and replace CHANGE_ME before connecting to PostgreSQL.
 python -m src.log_miner.extractor migrate
+python -m src.log_miner.extractor check
 python -m src.log_miner.extractor run
 python -m src.log_miner.extractor schedule
 ~~~
 
-The production providers require <code>OPENAI_API_KEY</code>. Applying the
-migration only requires PostgreSQL. Run offline tests and deterministic
-PostgreSQL verification with:
+The production providers require <code>OPENAI_API_KEY</code>. The
+<code>migrate</code> and <code>check</code> commands require only PostgreSQL;
+<code>check</code> validates the privacy-approved source table and prints a
+content-free JSON payload such as
+<code>{"eligible_count":0,"schema":"ready","status":"ok"}</code>. It returns
+nonzero for connection or schema failures without echoing driver details. Run
+offline tests and deterministic PostgreSQL verification with:
 
 ~~~powershell
 python -m pytest -q
@@ -88,6 +94,7 @@ The Compose service is opt-in and defaults to 02:00 UTC daily:
 
 ~~~powershell
 docker compose --profile analytics run --rm log-miner migrate
+docker compose --profile analytics run --rm log-miner check
 docker compose --profile analytics up -d log-miner
 ~~~
 

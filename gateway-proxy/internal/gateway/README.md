@@ -6,8 +6,9 @@ Its public construction paths separate production dependencies from testable
 logic:
 
 - <code>NewHandler</code> parses Redis, pings it, builds the token bucket,
-  optional cache/autopilot layers, local observability endpoint, CORS wrapper,
-  and long-lived clients.
+  optional cache/autopilot layers, performs a bounded PostgreSQL ping when an
+  experiment DSN is configured, and adds the local observability endpoint and
+  CORS wrapper.
 - <code>NewProxy</code> accepts an injected <code>RateLimiter</code> for
   deterministic unit tests.
 

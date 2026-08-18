@@ -1,13 +1,19 @@
-# CoreMesh AI
+# CoreMesh single-host deployment
 
-CoreMesh is an AI engineering platform prototype that combines a Go edge
-gateway with a Python intelligent runtime and local stateful infrastructure.
-The repository implements several production-oriented building blocks while
-retaining clearly marked placeholders for later roadmap phases.
+CoreMesh is a single-host AI engineering stack built from a Go gateway, Python
+runtime, React operations UI, Redis Stack, PostgreSQL, Qdrant, and an optional
+PostgreSQL-backed analytics worker. This is the deployment and end-to-end
+validation guide for the local, demo, and CI Compose topology.
 
-The checked-in code and the directory READMEs are the source of truth for what
-works today. The original [project blueprint](plan/coremesh.txt) describes a
-larger target system and should not be read as an implementation-status report.
+The stack is intentionally easy to validate without model credentials. It is
+not production hardened: the Compose topology has no TLS, authentication, or
+tenant isolation. Review [Production hardening](#production-hardening) before
+exposing it beyond a trusted host.
+
+The checked-in code and subsystem READMEs are the source of truth. See
+[ARCHITECTURE.md](ARCHITECTURE.md) for detailed data flows and state ownership;
+the original [project blueprint](plan/coremesh.txt) describes a larger target
+system rather than current implementation status.
 
 ## What runs today
 
@@ -75,6 +81,12 @@ Optional analytics profile:
                                                 --> golden_datasets / review
 ~~~
 
+The log miner reads redacted rows from `production_interaction_logs` over its
+PostgreSQL connection. It does not consume runtime trace files, so the
+`runtime-traces` forensic JSON/SQLite volume is deliberately mounted only in
+the runtime. The worker needs the shared Compose network and PostgreSQL schema,
+not a trace-volume mount.
+
 Middleware order matters. CORS/observability terminate locally, while other
 requests enter process metrics, autopilot, the optional semantic cache, then
 rate limiting and proxy resilience. This lets complex requests declare a cache
@@ -94,45 +106,96 @@ the final cache/route/circuit headers.
 | [DOCUMENTATION.md](DOCUMENTATION.md) | Required file headers, docstrings, comments, directory READMEs, and upkeep checklist. |
 | <code>docker-compose.yml</code> | Local data services plus opt-in <code>app</code> and <code>analytics</code> profiles. |
 | <code>init.sql</code> | First-boot PostgreSQL schema for prompts, experiments, redacted logs, candidates, and golden datasets. |
+| [integration_test.sh](integration_test.sh) | Isolated, credential-free seven-stage Compose acceptance test. |
 
 Each major source and test directory has its own README. Start there before
 changing a subsystem; it records local invariants, dependencies, side effects,
 and focused test commands.
 
-## Quick start
+## Prerequisites
 
-### Prerequisites
+- Docker Engine or Docker Desktop with Docker Compose v2
+- Enough memory and disk for application images and persistent volumes
+- Network access while Docker builds or pulls images
+- Bash, `curl`, and Python 3 only for the master integration script
 
-- Docker Desktop with Compose
-- Go 1.22 or newer
-- Python 3.11 or newer
-- Node.js 22 or newer for host-based frontend development
-- Tesseract and Poppler for host-based document ingestion; the runtime
-  Dockerfile installs the Linux packages
-- An OpenAI API key only for LLM extraction, vision fallback, embeddings,
-  OpenAI arbitration, semantic caching, production log labeling, or trusted
-  self-healing documentation runs
+Go 1.22, Python 3.11, Node.js 22, Tesseract, and Poppler are needed only for
+the corresponding host-development workflows. The service images include
+their runtime dependencies. EasyOCR and cross-encoder modes can download model
+weights on first use.
 
-EasyOCR and cross-encoder models can download weights on first use. Plan for
-network access, startup time, and local cache space when invoking those paths.
+## Configure Compose
 
-### Complete application with Compose
+Copy the root template and set a unique PostgreSQL password before invoking
+Compose:
+
+~~~powershell
+Copy-Item .env.example .env
+~~~
+
+~~~bash
+cp .env.example .env
+~~~
+
+`.env.example` intentionally leaves secrets blank. `POSTGRES_PASSWORD` is
+required and Compose interpolation fails immediately when it is missing. Keep
+`.env` out of version control. Use a URL-safe password because Compose also
+interpolates it into PostgreSQL DSNs.
+
+Validate the resolved configuration before creating containers:
+
+~~~bash
+docker compose config --quiet
+~~~
+
+All published ports bind to `COREMESH_BIND_ADDRESS=127.0.0.1` by default.
+Override the `*_HOST_PORT` values when a port is occupied. If the gateway or
+frontend port changes, keep `VITE_GATEWAY_BASE_URL` and
+`GATEWAY_ALLOWED_ORIGINS` aligned and rebuild the frontend image.
+
+The root `.env` is the Compose contract. Service-local example files are for
+host development and intentionally use host-oriented addresses and blank
+secrets; do not copy their connection strings into Compose.
+
+### Provider modes
+
+External providers remain the defaults. These local substitutes are opt-in:
+
+| Capability | External/default | Credential-free validation |
+| --- | --- | --- |
+| RAG embeddings | `RAG_EMBEDDING_PROVIDER=openai` | `hash` |
+| RAG reranking | `RAG_RERANKER_PROVIDER=cross_encoder` | `lexical` |
+| Cache embeddings | `SEMANTIC_CACHE_EMBEDDING_PROVIDER=openai` | `hash` |
+| Arbitration | `ARBITRATION_MODE=external` | `deterministic` |
+| Secondary OCR | `OCR_EASYOCR_ENABLED=true` | `false` (Tesseract only) |
+| Chat | provider-backed when configured | `COREMESH_CHAT_STUB=true` |
+
+For a hermetic local or CI run, leave `OPENAI_API_KEY` and
+`ANTHROPIC_API_KEY` blank and select every credential-free value above. Hash
+embeddings are normalized, lexical reranking is token-overlap based, and
+deterministic arbitration is repeatable. The log miner's `check` command needs
+only PostgreSQL; a real mining run still needs its configured embedding and
+reference-generation providers.
+
+## Deploy with Compose
+
+### Complete application
 
 To build the runtime, gateway, and frontend and expose the dashboard at
 <http://localhost:3000>:
 
 ~~~powershell
-docker compose --profile app up --build
+docker compose --profile app up --detach --build --wait
 ~~~
 
 The browser targets <code>http://localhost:8080</code>; it never calls runtime
 port 8000 directly. Gateway CORS defaults to local frontend ports 3000 and 5173,
 and runtime trace artifacts persist in the <code>runtime-traces</code> volume.
 
-### 1. Start stateful infrastructure
+### Stateful infrastructure only
 
 ~~~powershell
-docker compose up -d
+docker compose up --detach --wait
 docker compose ps
 ~~~
 
@@ -141,7 +204,13 @@ PostgreSQL image runs <code>init.sql</code> only while initializing a new
 volume. Re-running the non-idempotent script against an existing schema will
 fail because the tables already exist.
 
-### 2. Start the Python runtime
+## Host development
+
+Compose is the supported integrated topology. The following service-local
+commands are useful when developing one component against already-running
+dependencies.
+
+### Python runtime
 
 ~~~powershell
 Set-Location services-runtime
@@ -165,7 +234,7 @@ Invoke-RestMethod http://localhost:8000/health
 See the [runtime guide](services-runtime/README.md) for ingestion examples,
 native OCR requirements, configuration, and library-level usage.
 
-### 3. Start the Go gateway
+### Go gateway
 
 With Redis and the runtime available:
 
@@ -189,7 +258,7 @@ See the [gateway guide](gateway-proxy/README.md) for every environment variable,
 request/response header, cache rule, identity key, circuit transition, and
 verification script.
 
-### 4. Start the React frontend
+### React frontend
 
 With the gateway available:
 
@@ -204,13 +273,25 @@ Open <http://localhost:3000>. See the
 [frontend guide](frontend-ui/README.md) for container, test, API-origin, and
 browser-storage details.
 
-### 5. Enable the production log miner (optional)
+## Analytics profile
 
 Apply the idempotent migration before starting the scheduled profile:
 
 ~~~powershell
 docker compose --profile analytics run --rm log-miner migrate
 docker compose --profile analytics up -d log-miner
+~~~
+
+PostgreSQL runs `init.sql` only when initializing a new volume. That bootstrap
+is not replay-safe. `analytics-workers/migrations/001_log_miner.sql` is the
+idempotent upgrade path for both new and existing volumes and can safely be run
+more than once.
+
+Verify schema connectivity and the eligible-row count without returning any
+prompt or response content:
+
+~~~powershell
+docker compose --profile analytics run --rm log-miner check
 ~~~
 
 The runtime publisher remains disabled until
@@ -221,6 +302,50 @@ settings bound its fail-open writes. The worker defaults to 02:00 UTC
 and requires an OpenAI key only when a real mining run reaches
 embedding/reference generation.
 
+## Master end-to-end validation
+
+From the repository root, run the integration test in Bash (Git Bash is
+supported on Windows):
+
+~~~bash
+bash ./integration_test.sh
+~~~
+
+The script creates an isolated `coremesh-it-*` Compose project, generates a
+random PostgreSQL password and eight free loopback ports, and ignores the
+repository `.env`. It enables hash embeddings, lexical reranking,
+deterministic arbitration, Tesseract-only OCR, stub chat, semantic caching,
+forensics, and interaction logging. The running scenario calls no model APIs
+and downloads no runtime model weights, though image builds and pulls may
+still need network access.
+
+Before testing requests, it starts fresh PostgreSQL state, applies the
+log-miner migration twice, verifies bootstrap/upgrade catalog parity, and
+idempotently seeds `cost_autopilot_routing` at 100% experimental rollout with
+prompt version 2. The seven stages validate:
+
+1. Gateway and frontend health, proxied runtime health, Redis-backed admission,
+   and PostgreSQL-backed experiment routing.
+2. Invoice ingestion with `index_for_rag=true` and a deterministic document ID.
+3. Hybrid Qdrant/BM25 retrieval with matching metadata and both retrieval ranks.
+4. Guardrailed SQL generation with a bounded PostgreSQL `SELECT` result.
+5. The exact skipped-document workflow, deterministic score-2 blocking
+   verdict, forensic trace, and eligible interaction-log row.
+6. The content-free log-miner schema and eligible-row check.
+7. A unique chat cache miss followed by a byte-identical hit and matching
+   observability counters.
+
+Failures print Compose state and the last 250 log lines. Cleanup removes only
+the isolated test project, its volumes, and its temporary artifacts. Preserve
+the stack and artifacts for inspection with:
+
+~~~bash
+KEEP_STACK=1 bash ./integration_test.sh
+~~~
+
+The script prints the preserved project name and URLs. Remove that exact
+project when finished rather than running an unscoped cleanup command.
+
 ## HTTP surface
 
 | Process | Method and path | Behavior |
@@ -228,13 +353,24 @@ embedding/reference generation.
 | Gateway | <code>GET /healthz</code> | Local liveness response; bypasses proxy middleware. |
 | Gateway | <code>GET /v1/observability</code> | Gateway-start time, admission/cache/circuit configuration, and per-process traffic counters. |
 | Runtime | <code>GET /health</code> | Runtime liveness response. |
-| Runtime through gateway | <code>POST /v1/ingest</code> | Accepts PDF or supported raster multipart uploads and returns OCR/extraction/validation metadata. |
+| Runtime through gateway | <code>POST /v1/ingest</code> | OCR/extraction; multipart `index_for_rag=true` also indexes page chunks. |
+| Runtime through gateway | <code>POST /v1/chat/completions</code> | OpenAI-shaped chat and the semantic-cache validation path. |
 | Runtime through gateway | <code>POST /v1/execute</code> | Restricted RAG, text-to-SQL, or cue-based multi-agent orchestration request. |
 | Runtime through gateway | <code>GET /v1/traces</code> | Filtered/paginated redacted forensic summaries. |
 | Runtime through gateway | <code>GET /v1/traces/{trace_id}</code> | One validated redacted trace artifact. |
 
 The browser uses only the gateway variants of runtime routes. Arbitration runs
 inside orchestration; there is no direct arbitration or human-review API.
+
+Ingestion remains extraction-only when `index_for_rag` is false or omitted.
+When true, it returns a SHA-256 document ID and chunk count and indexes
+nonempty page chunks into Qdrant and the application BM25 index. Re-ingesting
+identical content replaces the same chunk IDs. After a runtime restart, BM25
+rehydrates lazily from persisted Qdrant payloads.
+
+`/v1/execute` is deliberately non-cacheable because it can run stateful RAG,
+SQL, and agent workflows. Validate semantic caching through
+`/v1/chat/completions`; repeated `/v1/execute` requests correctly bypass it.
 
 ## Test and verification commands
 
@@ -306,27 +442,120 @@ dependencies. Their usage and expected assertions are documented in
 | Fine-tuning | Golden-data loading, PEFT/QLoRA training, W&B metrics, checkpoints, adapter export, and lineage manifests. |
 | Regression and documentation CI | Model-regression CI is active; self-healing docs analyzes trusted structural PR changes and commits only independently validated bounded Markdown repairs. |
 
-## Operational and security notes
+## Operations
 
-This is a local-development stack, not a hardened deployment:
+Show profile-aware state and follow logs:
 
-- Compose contains a visible development PostgreSQL password.
-- The gateway and runtime implement no authentication or TLS termination.
-- The dashboard is a local portfolio interface with no tenant authorization;
-  its trace viewer is read-only.
-- Some service ports bind to the host; inspect <code>docker-compose.yml</code>
-  before using an untrusted network.
-- Uploads are read into memory before OCR and may be sent to OpenAI when the
-  corresponding key and fallback path are active.
-- Redis stores rate-limit state and optional cached model responses. PostgreSQL,
-  Qdrant, and Chroma can persist application data when their library paths are
-  used. Enabled interaction logging stores regex-redacted prompts for up to 30
-  days; regex redaction is defense in depth and must match deployment policy.
-- Model/API calls can incur cost and transmit content to external providers.
-  Self-healing documentation sends selected structural deltas, current
-  Markdown blocks, and small neighboring style samples from trusted PRs to
-  OpenAI; forks and Dependabot never enter that trust boundary.
+~~~bash
+docker compose --profile app --profile analytics ps
+docker compose --profile app --profile analytics logs --follow --tail=200
+docker compose --profile app logs --follow runtime gateway
+~~~
 
-Treat the documented headers and READMEs as part of each module contract. The
-maintenance rules in [DOCUMENTATION.md](DOCUMENTATION.md) explain what must be
-updated alongside future behavior changes.
+Check the gateway, its proxied runtime path, and the frontend:
+
+~~~bash
+curl --fail http://127.0.0.1:8080/healthz
+curl --fail http://127.0.0.1:8080/health
+curl --fail http://127.0.0.1:3000/
+~~~
+
+The gateway container health check calls both local `/healthz` and proxied
+`/health`, so it exercises gateway-to-runtime connectivity. Gateway startup
+also performs bounded Redis and PostgreSQL checks. The runtime waits for
+healthy PostgreSQL, Redis, and Qdrant.
+
+Check a running worker or launch a one-shot mining run:
+
+~~~bash
+docker compose --profile analytics exec -T log-miner python -m src.log_miner.extractor check
+docker compose --profile analytics run --rm log-miner run
+~~~
+
+Back up `postgres-data`, `qdrant-data`, `chroma-data`, `redis-data`, and
+`runtime-traces` using each datastore's consistency requirements, and test
+restoration. PostgreSQL owns application metadata and miner source rows;
+Qdrant owns persisted RAG chunks; Chroma owns agent memory; Redis owns
+admission/cache state; and the trace volume owns forensic artifacts.
+
+### Safe and destructive shutdown
+
+Pause containers while retaining containers, networks, and data:
+
+~~~bash
+docker compose --profile app --profile analytics stop
+~~~
+
+Remove containers and the project network while retaining named volumes:
+
+~~~bash
+docker compose --profile app --profile analytics down
+~~~
+
+The following is destructive and should be used only for an intentional clean
+reset after verifying backups:
+
+~~~bash
+docker compose --profile app --profile analytics down --volumes --remove-orphans
+~~~
+
+It deletes PostgreSQL, Redis, Qdrant, Chroma, and forensic trace volumes for
+the project. Without a backup, those contents are not recoverable.
+
+## Troubleshooting
+
+- **Compose requires `POSTGRES_PASSWORD`.** Copy `.env.example` to `.env`, set
+  a nonblank value, then run `docker compose config --quiet`.
+- **A new password is rejected on an old volume.** PostgreSQL applies image
+  initialization credentials only when `postgres-data` is new. Change the role
+  password inside PostgreSQL or restore into a deliberately recreated volume;
+  do not casually delete the volume.
+- **`/healthz` works but the gateway container is unhealthy.** Its full health
+  check also proxies `/health`. Inspect runtime, Redis, PostgreSQL, and gateway
+  logs for bounded startup-connection errors.
+- **The miner reports a schema error.** Start PostgreSQL, run the idempotent
+  migration, then rerun `check`. Do not mount `runtime-traces`; it is not the
+  worker's input.
+- **Indexed ingestion returns 422 or 503.** A 422 means OCR yielded no
+  indexable page text. A 503 indicates an indexing dependency such as Qdrant
+  is unavailable. Extraction-only ingestion remains available when indexing
+  is false.
+- **Credential-free mode calls providers or downloads weights.** Confirm both
+  RAG providers, cache provider, deterministic arbitration,
+  `OCR_EASYOCR_ENABLED=false`, `COREMESH_CHAT_STUB=true`, and blank keys. The
+  integration script exports the complete set.
+- **The semantic cache never hits.** Enable it, configure a valid embedding
+  provider, send a stable identity such as `X-Team-ID`, and use
+  `/v1/chat/completions`. `/v1/execute` always bypasses the cache.
+- **The browser is blocked by CORS.** Add its exact origin to
+  `GATEWAY_ALLOWED_ORIGINS`, align `VITE_GATEWAY_BASE_URL`, and rebuild the
+  frontend image.
+- **A host port is occupied.** Change the relevant `*_HOST_PORT` rather than
+  binding a service to an untrusted interface.
+
+## Production hardening
+
+Before using CoreMesh with sensitive or multi-user data:
+
+- Terminate TLS at a trusted ingress and add authenticated, authorized service
+  and user identities. `X-Team-ID` is an accounting/cache identity, not
+  authentication.
+- Add tenant isolation to PostgreSQL, Redis keys, Qdrant collections, Chroma
+  memory, traces, and every runtime execution path.
+- Keep state services off public interfaces, restrict east-west traffic, and
+  use least-privilege database roles. Give the text-to-SQL engine a read-only
+  role limited to approved schemas.
+- Store credentials in a secret manager instead of `.env`, rotate them,
+  encrypt data and backups, and enforce tested retention/deletion policies.
+- Define upload/request limits, container resource quotas, timeouts, egress
+  policy, abuse controls, and deployment-specific PII redaction. Regex
+  redaction is defense in depth, not a complete privacy boundary.
+- Review model-provider data-use and residency terms and monitor cost before
+  enabling external model, embedding, OCR, or telemetry endpoints.
+- Pin images by immutable version or digest, scan dependencies, alert on
+  service and disk health, and roll schema changes through tested backup,
+  restore, and rollback procedures.
+
+Treat documented headers and subsystem READMEs as module contracts. The
+maintenance rules in [DOCUMENTATION.md](DOCUMENTATION.md) describe what must be
+updated with future behavior changes.

@@ -5,9 +5,10 @@ gateway environment configuration, constructs the complete handler, registers
 the local <code>/healthz</code> endpoint, forwards every other path to that
 handler, and blocks on <code>http.ListenAndServe</code> at port 8080.
 
-Construction is intentionally eager for mandatory infrastructure: Redis is
-pinged before the listener opens. Optional semantic-cache and PostgreSQL
-autopilot clients are also constructed when configured. Fatal configuration,
+Construction is intentionally eager for configured infrastructure: Redis is
+pinged before the listener opens, and the PostgreSQL autopilot store performs a
+bounded ping when its DSN is set. The optional semantic cache creates its
+selected embedding provider during construction. Fatal configuration,
 connection, construction, or listener errors terminate the process through the
 standard logger.
 

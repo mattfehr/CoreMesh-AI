@@ -1,12 +1,15 @@
 """Offline contract tests for selection, clustering, and idempotent routing."""
 from __future__ import annotations
 
+import json
 from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
 import numpy as np
 import pytest
 
+import src.log_miner.extractor as extractor_module
+import src.log_miner.repository as repository_module
 from src.log_miner.extractor import (
     ClusterAssignments,
     HDBSCANClusterer,
@@ -721,3 +724,50 @@ def test_overlapping_run_is_skipped_and_audited() -> None:
     assert summary.status is RunStatus.SKIPPED
     assert summary.run_id is not None
     assert len(repository.skipped) == 1
+
+
+def test_check_command_emits_content_free_health_json_without_providers(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setattr(repository_module, "check_log_source", lambda _dsn: 7)
+    monkeypatch.setattr(
+        extractor_module,
+        "build_default_miner",
+        lambda _settings: pytest.fail("check must not construct model providers"),
+    )
+
+    exit_code = extractor_module.main(["check"])
+
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    assert captured.err == ""
+    assert json.loads(captured.out) == {
+        "eligible_count": 7,
+        "schema": "ready",
+        "status": "ok",
+    }
+
+
+def test_check_command_sanitizes_database_failures(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    sensitive_detail = "postgresql://user:secret@example/prompt-row"
+
+    def unavailable(_dsn: str) -> int:
+        raise RuntimeError(sensitive_detail)
+
+    monkeypatch.setattr(repository_module, "check_log_source", unavailable)
+
+    exit_code = extractor_module.main(["check"])
+
+    captured = capsys.readouterr()
+    assert exit_code == 1
+    assert sensitive_detail not in captured.out
+    assert sensitive_detail not in captured.err
+    assert json.loads(captured.out) == {
+        "eligible_count": 0,
+        "schema": "invalid",
+        "status": "error",
+    }

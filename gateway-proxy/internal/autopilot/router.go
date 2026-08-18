@@ -165,9 +165,19 @@ type ExperimentStore interface {
 	LookupExperiment(ctx context.Context, flagName string) (Experiment, bool, error)
 }
 
+type postgresPool interface {
+	Ping(ctx context.Context) error
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+	Close()
+}
+
+var openPostgresPool = func(ctx context.Context, dsn string) (postgresPool, error) {
+	return pgxpool.New(ctx, dsn)
+}
+
 // PostgresExperimentStore reads feature_experiments on demand.
 type PostgresExperimentStore struct {
-	pool          *pgxpool.Pool
+	pool          postgresPool
 	lookupTimeout time.Duration
 }
 
@@ -179,9 +189,15 @@ func NewPostgresExperimentStore(ctx context.Context, dsn string, lookupTimeout t
 	if lookupTimeout <= 0 {
 		lookupTimeout = defaultExperimentLookupTimeout
 	}
-	pool, err := pgxpool.New(ctx, dsn)
+	pool, err := openPostgresPool(ctx, dsn)
 	if err != nil {
 		return nil, err
+	}
+	pingCtx, cancel := context.WithTimeout(ctx, lookupTimeout)
+	defer cancel()
+	if err := pool.Ping(pingCtx); err != nil {
+		pool.Close()
+		return nil, fmt.Errorf("postgres ping failed: %w", err)
 	}
 	return &PostgresExperimentStore{pool: pool, lookupTimeout: lookupTimeout}, nil
 }

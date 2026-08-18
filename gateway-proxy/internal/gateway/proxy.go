@@ -348,7 +348,7 @@ func NewHandler(ctx context.Context, cfg Config) (http.Handler, error) {
 		return nil, err
 	}
 	if cacheCfg.Enabled {
-		embedder, err := cache.NewOpenAIEmbedder(cacheCfg)
+		embedder, err := cache.NewEmbedder(cacheCfg)
 		if err != nil {
 			cleanup()
 			return nil, err

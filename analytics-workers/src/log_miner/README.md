@@ -43,8 +43,11 @@ Statements are parameterized and promotion is transactional.
 
 ## Operations
 
-The CLI commands are <code>migrate</code>, <code>run</code>, and
-<code>schedule</code>. A failed one-shot run exits nonzero and records a
-sanitized summary when PostgreSQL is available. The scheduler logs job failure
-and remains alive for the next cron occurrence; normal termination signals stop
-it gracefully.
+The CLI commands are <code>check</code>, <code>migrate</code>, <code>run</code>,
+and <code>schedule</code>. <code>check</code> validates the required columns,
+constraints, and indexes on <code>production_interaction_logs</code>, then
+returns only its eligible-row count and schema status as JSON. It needs no
+model-provider credentials and is safe for a container health check. A failed
+one-shot run exits nonzero and records a sanitized summary when PostgreSQL is
+available. The scheduler logs job failure and remains alive for the next cron
+occurrence; normal termination signals stop it gracefully.

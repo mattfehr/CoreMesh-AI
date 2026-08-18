@@ -26,6 +26,8 @@ from src.arbitration.consensus import (  # noqa: E402
     ConsensusArbitrator,
     ConsensusStatus,
     CriticAssessmentSchema,
+    DeterministicAdjudicatorClient,
+    DeterministicCriticClient,
     _extract_anthropic_text,
 )
 
@@ -88,6 +90,65 @@ def _payload(text="The answer is safe."):
         feature_scope="test",
         session_id="session-1",
     )
+
+
+def _deterministic_arbitrator():
+    return ConsensusArbitrator(
+        critics=[
+            DeterministicCriticClient("factual"),
+            DeterministicCriticClient("logic"),
+            DeterministicCriticClient("completeness"),
+        ],
+        adjudicator=DeterministicAdjudicatorClient(),
+        retry_attempts=1,
+    )
+
+
+def test_deterministic_arbitration_passes_complete_workflows_without_providers():
+    payload = _payload().model_copy(
+        update={
+            "metadata": {
+                "workflow_status": "completed",
+                "failed_observation_count": 0,
+                "skipped_observation_count": 0,
+            }
+        }
+    )
+
+    verdict = asyncio.run(_deterministic_arbitrator().arbitrate(payload))
+
+    assert verdict.status == ConsensusStatus.PASSED
+    assert verdict.delivery_allowed is True
+    assert [item.assigned_score for item in verdict.critic_assessments] == [5, 5, 5]
+    assert verdict.adjudication_required is False
+
+
+def test_deterministic_arbitration_blocks_incomplete_workflows_at_score_two():
+    payload = _payload().model_copy(
+        update={
+            "metadata": {
+                "workflow_status": "completed_with_gaps",
+                "failed_observation_count": 0,
+                "skipped_observation_count": 1,
+            }
+        }
+    )
+
+    verdict = asyncio.run(_deterministic_arbitrator().arbitrate(payload))
+
+    assessments = {
+        item.evaluation_dimension: item for item in verdict.critic_assessments
+    }
+    assert verdict.status == ConsensusStatus.BLOCKED
+    assert verdict.delivery_allowed is False
+    assert verdict.adjudication_required is True
+    assert assessments["completeness"].assigned_score == 2
+    assert assessments["completeness"].flagged_anomalies == [
+        "incomplete_specialist_output"
+    ]
+    assert "completeness_score_below_4" in verdict.triggered_by
+    assert verdict.adjudication is not None
+    assert verdict.adjudication.overall_quality_score == 2
 
 
 def test_critic_assessment_schema_validates_bounds_and_dimensions():

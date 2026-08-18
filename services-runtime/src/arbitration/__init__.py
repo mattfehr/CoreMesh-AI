@@ -23,9 +23,12 @@ from src.arbitration.consensus import (
     CriticAssessmentSchema,
     CriticClient,
     CriticFailure,
+    DeterministicAdjudicatorClient,
+    DeterministicCriticClient,
     OllamaCriticClient,
     OpenAIAdjudicatorClient,
     OpenAICriticClient,
+    configured_arbitrator,
 )
 
 __all__ = [
@@ -40,7 +43,10 @@ __all__ = [
     "CriticAssessmentSchema",
     "CriticClient",
     "CriticFailure",
+    "DeterministicAdjudicatorClient",
+    "DeterministicCriticClient",
     "OllamaCriticClient",
     "OpenAIAdjudicatorClient",
     "OpenAICriticClient",
+    "configured_arbitrator",
 ]

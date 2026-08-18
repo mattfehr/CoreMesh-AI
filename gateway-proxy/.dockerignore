@@ -1,0 +1,21 @@
+# Keep local credentials, VCS data, and development artifacts out of the image
+# build context. The example environment file remains available as documentation.
+.git
+.gitignore
+.env
+.env.*
+!.env.example
+
+# Local build and test output
+gateway
+*.exe
+*.out
+*.test
+coverage.*
+
+# Editor and OS state
+.idea
+.vscode
+*.swp
+.DS_Store
+Thumbs.db

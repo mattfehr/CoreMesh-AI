@@ -19,7 +19,8 @@ CoreMesh currently has five runtime layers:
 
 The analytics scheduler is opt-in through its Compose profile. An
 <code>app</code> Compose profile boots the runtime, gateway, and frontend for
-local/CI smoke tests and persists runtime forensics in a named volume.
+local/CI smoke tests and persists runtime forensics and Chroma memory in
+separate named volumes.
 Model-regression CI and guarded self-healing documentation are live
 repository-automation boundaries. Prompt/flag control-plane packages remain
 placeholders. Fine-tuning is an implemented offline analytics boundary and
@@ -29,8 +30,9 @@ does not join request serving.
 
 The executable gateway is <code>gateway-proxy/cmd/main.go</code>. Startup loads
 configuration, verifies Redis connectivity, constructs optional middleware,
-and listens on port 8080. Startup fails closed if configuration or mandatory
-Redis access is invalid.
+and listens on port 8080. When PostgreSQL-backed experiment routing is
+configured, construction also performs a bounded database ping. Startup fails
+closed if configuration or mandatory Redis/PostgreSQL access is invalid.
 
 <code>GET /healthz</code> is handled by the top-level multiplexer and bypasses
 all middleware. The browser application wrapper handles CORS and local
@@ -94,7 +96,10 @@ placed in headers only when explicitly enabled.
 The cache key scope includes method, escaped path, routed model, system/developer
 message hash, non-message parameter hash, and streaming flag. Thus a similar
 prompt cannot cross material request settings. Redis Stack performs HNSW
-similarity lookup over OpenAI embeddings.
+similarity lookup over OpenAI embeddings by default; an explicitly selected
+normalized feature-hash provider supports credential-free integration tests.
+An exact repeat first checks its deterministic Redis key, avoiding a transient
+miss while RediSearch indexes a new hash.
 
 Embedding, index, and lookup failures fail open to the upstream and report a
 cache bypass. Only successful 2xx responses are stored, and store/hit-counter
@@ -106,6 +111,11 @@ Unified <code>/v1/execute</code> requests bypass semantic lookup/storage even
 when caching is enabled. They create forensic/memory side effects and may read
 fresh SQL or RAG state, so replaying an old response would violate execution
 semantics.
+
+Caller or tenant identity is not part of the cache scope. The current local
+stack has no authentication boundary, so a production deployment must add
+authorization and tenant isolation or provision separate caches before serving
+untrusted callers.
 
 ### Admission and resilience invariants
 
@@ -159,7 +169,12 @@ Structured extraction
 Invoice-total validation
     |
     v
-IngestResponse with provenance, flags, validation, pages, and timing
+Optional index_for_rag branch
+    |-- false: preserve extraction-only behavior
+    |-- true: SHA-256 document ID + nonempty page chunks
+    |          -> shared retriever -> Qdrant + process-local BM25
+    v
+IngestResponse with provenance, validation, timing, and optional rag_index
 ~~~
 
 Vision fallback failure preserves the best OCR candidate. By contrast, an
@@ -167,6 +182,11 @@ enabled LLM structured-extraction failure propagates and the route returns 422;
 it does not silently switch to regex. The offline regex parser is intentionally
 specialized for the canonical invoice layout used by the verification script,
 not a general replacement for model extraction.
+
+The page OCR text is retained only inside the processing call and is never a
+response field. Opt-in indexing returns 422 when no page has indexable text and
+503 when the retrieval dependency is unavailable. Content-derived document and
+chunk IDs make an identical re-ingest an idempotent upsert.
 
 Uploads, rendered PDF pages, and OCR arrays are held in process memory. OCR can
 consume substantial CPU, and EasyOCR may initialize/download model weights on
@@ -208,15 +228,18 @@ cancellation, and lifecycle management.
 ### Hybrid retrieval
 
 <code>HybridRetriever.index_chunks</code> creates OpenAI embeddings, upserts
-stable UUIDv5 points into Qdrant, and builds an in-process BM25 corpus.
+stable UUIDv5 points into Qdrant, and upserts an in-process BM25 corpus.
 <code>search</code> retrieves dense and sparse candidates, combines ranks with
 weighted reciprocal-rank fusion, reranks a bounded candidate set with a
 cross-encoder, optionally promotes exact technical identifiers, and emits
 source markers.
 
-The BM25 index is process-local and must be rebuilt after restart. Qdrant is
-persistent. The embedding and reranker paths can perform network calls and
-model downloads respectively.
+The BM25 index is process-local, but the first search after a runtime restart
+lazily rehydrates it from persisted Qdrant payloads. The production defaults
+can perform OpenAI network calls and cross-encoder model downloads. Explicit
+<code>hash</code> embedding and <code>lexical</code> reranker modes provide a
+deterministic, credential-free validation path and are not model-quality
+production replacements.
 
 ### Guarded SQL
 
@@ -240,12 +263,15 @@ the same node contracts is used.
 Redis short-term memory stores session state and events under expiring keys.
 Chroma long-term memory stores a summary after completion using deterministic
 local hash embeddings. Specialist errors become observations so later steps and
-the synthesized result can report partial failure. After synthesis, consensus
+the synthesized result can report partial failure. A specialist with no
+applicable input emits <code>skipped</code>; the workflow becomes
+<code>completed_with_gaps</code> before arbitration. After synthesis, consensus
 arbitration may replace or block the deliverable.
 
 One specialist accepts document bytes, base64, text, or a filesystem path from
-trusted Python session context. The public HTTP model intentionally cannot
-select that specialist or provide any of those fields.
+trusted Python session context. A public agent-orchestrator query can cue that
+specialist, but the strict HTTP model cannot provide document context, so the
+specialist records a skip rather than inventing extraction output.
 
 ### Consensus arbitration
 
@@ -259,6 +285,11 @@ The default clients can call OpenAI, Anthropic, and Ollama. A clean critic pass
 releases the original text, while adjudication can release, remediate, block,
 or request manual review. Unified execution returns that structured verdict,
 but no direct arbitration endpoint or durable review queue acts on it.
+
+An opt-in deterministic mode is limited to hermetic validation. It gives three
+score-5 assessments to a complete workflow; any failed or skipped observation
+lowers completeness to 2 and exercises the normal blocking adjudication path
+without an external provider call.
 
 ### Failure forensics and production feedback
 
@@ -305,6 +336,12 @@ noise to join a systemic cluster as new failures arrive. Stable source
 fingerprints and unique indexes make label retries idempotent. Source logs,
 orphaned cached embeddings, and pending review cases expire after 30 days;
 promoted golden cases have separate retention.
+
+The miner reads only the privacy-approved
+<code>production_interaction_logs</code> table through PostgreSQL. It does not
+consume or mount the runtime forensic JSON/SQLite volume. Its
+<code>check</code> command validates the source schema and reports only a schema
+status and eligible-row count.
 
 ## Repository documentation repair flow
 
@@ -357,7 +394,7 @@ concurrent non-fast-forward pushes fail without bypassing protection.
 | PostgreSQL miner lease/embedding cache | Scheduled analytics worker | Crash-recoverable run fencing; derived vectors are removed when no retained source prompt references them. |
 | PostgreSQL query target | SQL sandbox | Read-only transaction requested, results materialized, transaction rolled back. |
 | Qdrant collection | RAG dense index | Persistent named volume in Compose. |
-| In-process BM25 corpus | RAG sparse index | Lost at process exit. |
+| In-process BM25 corpus | RAG sparse index | Lost at process exit, then lazily rebuilt from Qdrant payloads on first search. |
 | Redis agent sessions/events | Orchestrator | TTL controlled by runtime settings. |
 | Chroma agent summaries | Orchestrator | Local persistent directory; deterministic interaction ID upserts. |
 | Runtime forensic JSON/SQLite | Orchestrator and read-only trace API | Compose <code>runtime-traces</code> volume; redacted artifacts persist across container recreation. |
@@ -374,10 +411,11 @@ Most heavyweight clients are lazy and connect only when their feature is
 invoked.
 
 The gateway reads environment variables once during startup. Redis is connected
-and pinged immediately. Semantic-cache configuration can require OpenAI
-credentials; autopilot is on by default and opens a PostgreSQL pool only when a
-DSN is supplied. Its exact CORS origin allowlist is also startup configuration.
-Restart the gateway after configuration changes.
+and pinged immediately. Semantic-cache configuration requires OpenAI
+credentials only for the OpenAI embedding provider; the hash provider remains
+explicitly opt-in. Autopilot is on by default and opens and pings a PostgreSQL
+pool only when a DSN is supplied. Its exact CORS origin allowlist is also
+startup configuration. Restart the gateway after configuration changes.
 
 The frontend gateway origin is a Vite build-time variable, not runtime service
 discovery. Local and Compose builds default to <code>http://localhost:8080</code>

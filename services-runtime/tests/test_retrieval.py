@@ -9,16 +9,22 @@ Side effects:
     None outside process memory; no OpenAI, Qdrant, or model download occurs.
 """
 
+import math
 import sys
 import time
 from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.rag.retrieval import (  # noqa: E402
     BM25SparseIndex,
+    HashEmbeddingProvider,
     HybridRetriever,
+    LexicalReranker,
     SearchHit,
     TextChunk,
     tokenize,
@@ -174,3 +180,178 @@ def test_rrf_weights_are_applied():
     exact = next(r for r in results if r.chunk_id == "exact")
     semantic = next(r for r in results if r.chunk_id == "semantic")
     assert semantic.rrf_score > exact.rrf_score
+
+
+class PersistentFakeDenseIndex:
+    """Qdrant-shaped fake whose payloads survive retriever construction."""
+
+    def __init__(self, chunks=()):
+        self._chunks = {chunk.chunk_id: chunk for chunk in chunks}
+        self.load_calls = 0
+
+    def index_chunks(self, chunks, vectors):
+        assert len(chunks) == len(vectors)
+        self._chunks.update({chunk.chunk_id: chunk for chunk in chunks})
+
+    def search(self, query_vector, limit):
+        return [
+            SearchHit(chunk=chunk, score=1.0 / rank)
+            for rank, chunk in enumerate(self._chunks.values(), start=1)
+        ][:limit]
+
+    def load_chunks(self):
+        self.load_calls += 1
+        return list(self._chunks.values())
+
+
+def test_hash_embeddings_are_deterministic_and_unit_normalized():
+    provider = HashEmbeddingProvider(vector_size=32)
+
+    first, second, blank = provider.embed(["Acme invoice 100", "Acme invoice 100", ""])
+
+    assert first == second
+    assert len(first) == 32
+    assert math.isclose(sum(value * value for value in first), 1.0)
+    assert math.isclose(sum(value * value for value in blank), 1.0)
+
+
+def test_hash_embedding_rejects_nonpositive_dimensions():
+    with pytest.raises(ValueError, match="positive"):
+        HashEmbeddingProvider(vector_size=0)
+
+
+def test_lexical_reranker_prefers_token_overlap():
+    chunks = [
+        TextChunk(chunk_id="match", source="invoice", text="Acme Software License"),
+        TextChunk(chunk_id="other", source="invoice", text="Travel and lodging"),
+    ]
+
+    scores = LexicalReranker().score("Acme license", chunks)
+
+    assert scores[0] > scores[1]
+    assert scores[1] == 0.0
+
+
+def test_bm25_rehydrates_from_persisted_dense_payloads_after_restart():
+    persisted = TextChunk(
+        chunk_id="invoice-page-1",
+        source="invoice.png",
+        text="Acme Corp Software License invoice total 108 dollars",
+        metadata={"document_id": "doc-1", "page_number": 1},
+    )
+    dense = PersistentFakeDenseIndex([persisted])
+    retriever = HybridRetriever(
+        embedding_provider=FakeEmbeddingProvider(),
+        dense_index=dense,
+        sparse_index=BM25SparseIndex(),
+        reranker=LexicalReranker(),
+    )
+
+    first = retriever.search("Acme Software License", top_k=1)
+    second = retriever.search("Acme Software License", top_k=1)
+
+    assert dense.load_calls == 1
+    assert first[0].chunk_id == persisted.chunk_id
+    assert first[0].dense_rank == 1
+    assert first[0].sparse_rank == 1
+    assert second[0].sparse_rank == 1
+
+
+def test_first_ingest_after_restart_merges_with_persisted_sparse_corpus():
+    old_chunk = TextChunk(
+        chunk_id="old",
+        source="old.pdf",
+        text="Historic renewal policy",
+    )
+    new_chunk = TextChunk(
+        chunk_id="new",
+        source="new.pdf",
+        text="Current software invoice",
+    )
+    dense = PersistentFakeDenseIndex([old_chunk])
+    sparse = BM25SparseIndex()
+    retriever = HybridRetriever(
+        embedding_provider=FakeEmbeddingProvider(),
+        dense_index=dense,
+        sparse_index=sparse,
+        reranker=LexicalReranker(),
+    )
+
+    retriever.index_chunks([new_chunk])
+
+    assert dense.load_calls == 1
+    assert sparse.search("historic renewal", limit=5)[0].chunk.chunk_id == "old"
+    assert sparse.search("current software", limit=5)[0].chunk.chunk_id == "new"
+
+
+def test_first_ingest_survives_empty_persisted_corpus_with_rank_bm25(monkeypatch):
+    """Fresh Qdrant hydration must not construct BM25Okapi with no documents."""
+
+    class GuardBM25:
+        def __init__(self, corpus):
+            assert corpus, "BM25Okapi must not receive an empty corpus"
+            self._corpus = corpus
+
+        def get_scores(self, query_tokens):
+            query = set(query_tokens)
+            return [float(len(query.intersection(document))) for document in self._corpus]
+
+    monkeypatch.setitem(sys.modules, "rank_bm25", SimpleNamespace(BM25Okapi=GuardBM25))
+    dense = PersistentFakeDenseIndex()
+    sparse = BM25SparseIndex()
+    retriever = HybridRetriever(
+        embedding_provider=FakeEmbeddingProvider(),
+        dense_index=dense,
+        sparse_index=sparse,
+        reranker=LexicalReranker(),
+    )
+    first_chunk = TextChunk(
+        chunk_id="first:page:1",
+        source="first.png",
+        text="Acme Software License invoice",
+    )
+
+    retriever.index_chunks([first_chunk])
+
+    assert dense.load_calls == 1
+    assert sparse.search("Software License", limit=5)[0].chunk.chunk_id == first_chunk.chunk_id
+
+
+def test_sparse_upsert_replaces_same_chunk_without_dropping_other_documents():
+    sparse = BM25SparseIndex()
+    sparse.upsert_chunks(
+        [
+            TextChunk(chunk_id="doc-a:1", source="a", text="original alpha"),
+            TextChunk(chunk_id="doc-b:1", source="b", text="retained beta"),
+        ]
+    )
+    sparse.upsert_chunks(
+        [TextChunk(chunk_id="doc-a:1", source="a", text="updated gamma")]
+    )
+
+    assert sparse.search("original", limit=5) == []
+    assert sparse.search("updated", limit=5)[0].chunk.chunk_id == "doc-a:1"
+    assert sparse.search("retained", limit=5)[0].chunk.chunk_id == "doc-b:1"
+
+
+def test_single_document_sparse_match_survives_negative_library_idf():
+    class NegativeScoreBM25:
+        def get_scores(self, _query_tokens):
+            return [-0.25]
+
+    sparse = BM25SparseIndex()
+    sparse.index_chunks(
+        [
+            TextChunk(
+                chunk_id="invoice:page:1",
+                source="invoice.png",
+                text="Acme Software License invoice",
+            )
+        ]
+    )
+    sparse._bm25 = NegativeScoreBM25()
+
+    hits = sparse.search("Software License", limit=5)
+
+    assert [hit.chunk.chunk_id for hit in hits] == ["invoice:page:1"]
+    assert hits[0].score > 0

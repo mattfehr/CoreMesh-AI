@@ -56,6 +56,18 @@ BEGIN
             ADD CONSTRAINT production_interaction_prompt_nonblank
             CHECK (BTRIM(redacted_prompt) <> '') NOT VALID;
     END IF;
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conname = 'production_interaction_score_bounds'
+          AND conrelid = 'production_interaction_logs'::regclass
+    ) THEN
+        ALTER TABLE production_interaction_logs
+            ADD CONSTRAINT production_interaction_score_bounds
+            CHECK (
+                min_arbitration_score IS NULL
+                OR min_arbitration_score BETWEEN 1 AND 5
+            ) NOT VALID;
+    END IF;
 END $$;
 
 CREATE INDEX IF NOT EXISTS production_interaction_logs_eligible_idx

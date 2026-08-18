@@ -32,7 +32,7 @@ def test_orchestrator_dependencies_are_lazily_reused(monkeypatch):
     if hasattr(runtime_main.app.state, "orchestrator_dependencies"):
         del runtime_main.app.state.orchestrator_dependencies
 
-    def build_dependencies():
+    def build_dependencies(**_kwargs):
         constructions.append(True)
         return sentinel
 

@@ -371,6 +371,81 @@ class ConsensusArbitrator:
         )
 
 
+class DeterministicCriticClient:
+    """Hermetic critic used by local integration validation.
+
+    The deterministic policy intentionally consumes only categorical workflow
+    metadata. It never inspects user content, calls a provider, or attempts to
+    stand in for production model review. Healthy workflows score five in all
+    dimensions; a failed or skipped specialist lowers completeness to two so
+    the normal consensus/adjudication path remains exercised end to end.
+    """
+
+    provider_name = "deterministic"
+
+    def __init__(self, dimension: EvaluationDimension) -> None:
+        self.dimension = dimension
+
+    async def assess(self, payload: ArbitrationPayload) -> CriticAssessmentSchema:
+        failed_count = _metadata_nonnegative_int(payload.metadata, "failed_observation_count")
+        skipped_count = _metadata_nonnegative_int(payload.metadata, "skipped_observation_count")
+        degraded = failed_count > 0 or skipped_count > 0
+        low_completeness = degraded and self.dimension == "completeness"
+        return CriticAssessmentSchema(
+            evaluation_dimension=self.dimension,
+            assigned_score=2 if low_completeness else 5,
+            flagged_anomalies=(
+                ["incomplete_specialist_output"] if low_completeness else []
+            ),
+            confidence_coefficient=1.0,
+        )
+
+
+class DeterministicAdjudicatorClient:
+    """Block deterministic degraded outputs without any external model call."""
+
+    provider_name = "deterministic_adjudicator"
+
+    async def adjudicate(
+        self,
+        payload: ArbitrationPayload,
+        assessments: Sequence[CriticAssessmentSchema],
+        failures: Sequence[CriticFailure],
+        triggered_by: Sequence[str],
+    ) -> AdjudicationSchema:
+        del payload, failures
+        minimum_score = min(
+            (assessment.assigned_score for assessment in assessments),
+            default=1,
+        )
+        return AdjudicationSchema(
+            action="block",
+            overall_quality_score=max(1, min(10, minimum_score)),
+            confidence_coefficient=1.0,
+            confirmed_issues=list(triggered_by),
+            rationale=(
+                "Deterministic integration policy blocks workflows with failed "
+                "or skipped specialist output."
+            ),
+        )
+
+
+def configured_arbitrator() -> ConsensusArbitrator:
+    """Build the selected production or hermetic arbitration dependency."""
+
+    if settings.arbitration_mode == "deterministic":
+        return ConsensusArbitrator(
+            critics=[
+                DeterministicCriticClient("factual"),
+                DeterministicCriticClient("logic"),
+                DeterministicCriticClient("completeness"),
+            ],
+            adjudicator=DeterministicAdjudicatorClient(),
+            retry_attempts=1,
+        )
+    return ConsensusArbitrator()
+
+
 class OpenAICriticClient:
     """OpenAI structured-output critic for one evaluation dimension."""
     provider_name = "openai"
@@ -595,6 +670,18 @@ def _default_critics() -> list[CriticClient]:
     ]
 
 
+def _metadata_nonnegative_int(metadata: Mapping[str, Any], name: str) -> int:
+    """Return a safe non-negative workflow counter from untrusted metadata."""
+
+    value = metadata.get(name, 0)
+    if isinstance(value, bool):
+        return 0
+    try:
+        return max(0, int(value))
+    except (TypeError, ValueError):
+        return 0
+
+
 def _critic_messages(payload: ArbitrationPayload, dimension: EvaluationDimension) -> list[dict[str, str]]:
     role_descriptions = {
         "factual": "Check factual accuracy, verifiability, and unsupported claims.",
@@ -718,9 +805,12 @@ __all__ = [
     "CriticAssessmentSchema",
     "CriticClient",
     "CriticFailure",
+    "DeterministicAdjudicatorClient",
+    "DeterministicCriticClient",
     "AdjudicatorClient",
     "OpenAIAdjudicatorClient",
     "OpenAICriticClient",
     "AnthropicCriticClient",
     "OllamaCriticClient",
+    "configured_arbitrator",
 ]
